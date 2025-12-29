@@ -14,7 +14,7 @@ import inspect
 
 from config import (
     MOTOR_NAMES, MOTOR_IDS, LEROBOT_AVAILABLE,
-    FeetechMotorsBus, Motor, MotorNormMode
+    FeetechMotorsBus, Motor, MotorNormMode, HOME_POSITIONS
 )
 from normalization import normalize_position, denormalize_position, detect_wrap_around
 from motor_control import MotorController
@@ -156,9 +156,6 @@ class LeRobotGUI:
             self.slider_enabled  # Passer le BooleanVar existant
         )
         
-        # Debug - créé avec None pour motors, sera mis à jour après connexion
-        self.debug_frame = widgets.create_debug_frame(self.root, None, self.log)
-        
         # Log - créer d'abord le widget, puis appeler les callbacks
         _, self.log_text = widgets.create_log_frame(self.root, log_callback=None)
         
@@ -204,10 +201,6 @@ class LeRobotGUI:
                 self.motor_controller = MotorController(self.motors, self.log)
                 self.calibration_manager = CalibrationManager(self.motors, self.log)
                 self.recording_manager = RecordingManager(self.motors, self.log)
-                
-                # Mettre à jour le frame de debug avec motors
-                self.debug_frame.destroy()
-                self.debug_frame = widgets.create_debug_frame(self.root, self.motors, self.log)
                 
                 # Charger les calibrations
                 self.calibration_manager.load_calibration_from_file()

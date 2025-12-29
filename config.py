@@ -41,6 +41,16 @@ DEFAULT_CALIBRATION_FILE = "calibration.json"
 # Position maximale des encodeurs
 MAX_POS = 4096
 
-# Position Home par défaut
+# Position Home par défaut (ancienne valeur, conservée pour compatibilité)
 HOME_POSITION = 2048
+
+# Position Home personnalisée pour chaque moteur
+HOME_POSITIONS = {
+    "shoulder_pan": 1827,
+    "shoulder_lift": 761,
+    "elbow_flex": 3046,
+    "wrist_flex": 854,
+    "wrist_roll": 2211,
+    "gripper": 2044
+}
 

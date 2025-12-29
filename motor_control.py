@@ -3,7 +3,7 @@ Contrôle des moteurs - Lecture, écriture, verrouillage, etc.
 """
 
 import time
-from config import MOTOR_NAMES, MOTOR_IDS, HOME_POSITION
+from config import MOTOR_NAMES, MOTOR_IDS, HOME_POSITION, HOME_POSITIONS
 
 
 class MotorController:
@@ -120,16 +120,27 @@ class MotorController:
             self.log("🔒 Moteurs verrouillés (sans bouger)")
     
     def go_home(self):
-        """Envoie tous les moteurs à la position centrale (HOME_POSITION)"""
+        """Envoie tous les moteurs à leur position Home personnalisée simultanément"""
         try:
-            # Éviter un "coup" au moment du verrouillage: définir d'abord l'objectif,
-            # puis activer le torque
-            self.write_positions(
-                {name: HOME_POSITION for name in MOTOR_NAMES},
-                normalize=False
-            )
+            # Préparer toutes les positions home
+            home_positions = {
+                name: HOME_POSITIONS.get(name, HOME_POSITION) 
+                for name in MOTOR_NAMES
+            }
+            
+            # Activer le torque sur tous les moteurs en même temps
             self.set_torque(MOTOR_NAMES, enable=True)
-            self.log(f"🏠 Retour à la position Home ({HOME_POSITION})")
+            time.sleep(0.01)  # Petite pause pour que le torque soit activé
+            
+            # Envoyer toutes les positions simultanément avec sync_write
+            try:
+                self.motors.sync_write("Goal_Position", home_positions, normalize=False)
+                self.log("🏠 Retour à la position Home personnalisée (tous les moteurs simultanément)")
+            except Exception as sync_error:
+                # Si sync_write échoue, essayer avec write_positions (qui a son propre fallback)
+                self.log(f"⚠️ sync_write échoué, utilisation du fallback: {sync_error}")
+                self.write_positions(home_positions, normalize=False)
+                self.log("🏠 Retour à la position Home personnalisée")
         except Exception as e:
             self.log(f"❌ Erreur: {e}")
 
