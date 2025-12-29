@@ -31,8 +31,8 @@
   },
   "gripper": {
     "motor_id": 6,
-    "pos_left": 2050,
-    "pos_right": 3445,
-    "pos_center": 2540
+    "pos_left": 2012,
+    "pos_right": 3268,
+    "pos_center": 2379
   }
 }

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SO-ARM101 Controller</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 SO-ARM101 Controller</h1>
+            <p class="subtitle">Contrôleur Web pour Bras Robotique</p>
+        </header>
+
+        <!-- Section Connexion -->
+        <section class="card">
+            <h2>🔌 Connexion</h2>
+            <div class="connection-panel">
+                <div class="input-group">
+                    <label for="port-input">Port:</label>
+                    <input type="text" id="port-input" value="COM3" placeholder="COM3">
+                    <button id="connect-btn" class="btn btn-primary">Connecter</button>
+                </div>
+                <div class="status-indicator">
+                    <span id="status-text" class="status-disconnected">Déconnecté</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section Contrôle -->
+        <section class="card">
+            <h2>🎮 Contrôle</h2>
+            <div class="control-buttons">
+                <button id="read-positions-btn" class="btn btn-secondary">📊 Lire Positions</button>
+                <button id="release-btn" class="btn btn-secondary">🔓 Relâcher Moteurs</button>
+                <button id="lock-btn" class="btn btn-secondary">🔒 Verrouiller Moteurs</button>
+                <button id="home-btn" class="btn btn-secondary">🏠 Position Home</button>
+            </div>
+        </section>
+
+        <!-- Section Sliders -->
+        <section class="card">
+            <h2>🎚️ Contrôle Manuel des Moteurs</h2>
+            <div class="sliders-control">
+                <div class="slider-toggle">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="slider-enable-checkbox">
+                        <span>✓ Activer contrôle par sliders</span>
+                    </label>
+                    <button id="refresh-calib-btn" class="btn btn-small">↻ Rafraîchir calibration</button>
+                </div>
+                <div id="sliders-container"></div>
+            </div>
+        </section>
+
+        <!-- Section Enregistrement -->
+        <section class="card">
+            <h2>⏺️ Enregistrement / Lecture</h2>
+            <div class="recording-panel">
+                <div class="input-group">
+                    <label for="interval-input">Intervalle (ms):</label>
+                    <input type="number" id="interval-input" value="100" min="10" max="1000">
+                </div>
+                <div class="recording-controls">
+                    <button id="record-btn" class="btn btn-success">⏺ Enregistrer</button>
+                    <button id="stop-record-btn" class="btn btn-danger" disabled>⏹ Stop</button>
+                    <button id="save-btn" class="btn btn-info">💾 Sauvegarder</button>
+                    <button id="load-btn" class="btn btn-info">📂 Charger</button>
+                    <input type="file" id="file-input" accept=".json" style="display: none;">
+                    <button id="play-btn" class="btn btn-success">▶ Lire</button>
+                    <button id="stop-play-btn" class="btn btn-danger" disabled>⏸ Stop Lecture</button>
+                </div>
+                <div id="record-status" class="record-status"></div>
+                <div id="playback-progress-container" class="playback-progress-container" style="display: none;">
+                    <div class="progress-info">
+                        <span id="progress-text">0 / 0 frames</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar-wrapper">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section Outils -->
+        <section class="card">
+            <h2>🔧 Outils</h2>
+            <div class="tools-buttons">
+                <button id="setup-motors-btn" class="btn btn-warning">🔧 Setup Moteurs</button>
+                <button id="calibrate-btn" class="btn btn-warning">📐 Calibrer</button>
+                <button id="find-port-btn" class="btn btn-warning">🔍 Trouver Port</button>
+            </div>
+        </section>
+
+        <!-- Section Calibration Modal -->
+        <div id="calibration-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>📐 Calibration des Moteurs</h2>
+                <div class="modal-tabs">
+                    <button class="tab-btn active" data-tab="auto">🔧 Automatique</button>
+                    <button class="tab-btn" data-tab="manual">✋ Manuelle</button>
+                </div>
+                
+                <div id="auto-tab" class="tab-content active">
+                    <p>Cette fonction va trouver les limites min/max de chaque moteur.</p>
+                    <p class="warning">⚠️ Assurez-vous que le robot a de l'espace pour bouger !</p>
+                    <div class="motor-selection">
+                        <h3>Moteurs à calibrer:</h3>
+                        <div id="motor-checkboxes"></div>
+                    </div>
+                    <button id="start-auto-calib-btn" class="btn btn-primary">▶ Démarrer la Calibration</button>
+                    <div id="auto-calib-log" class="calib-log"></div>
+                </div>
+                
+                <div id="manual-tab" class="tab-content">
+                    <div class="manual-controls">
+                        <button id="release-all-btn" class="btn btn-secondary">🔓 Relâcher TOUS</button>
+                        <button id="lock-all-btn" class="btn btn-secondary">🔒 Verrouiller TOUS</button>
+                    </div>
+                    <div id="manual-calib-container" class="manual-calib-container"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section Log -->
+        <section class="card">
+            <h2>📋 Journal</h2>
+            <div id="log-container" class="log-container"></div>
+        </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+

@@ -7,7 +7,6 @@ import os
 import inspect
 import time
 import threading
-from tkinter import ttk, scrolledtext, messagebox
 
 from config import (
     MOTOR_NAMES, MOTOR_IDS, DEFAULT_CALIBRATION_FILE,

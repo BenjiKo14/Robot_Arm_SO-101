@@ -5,7 +5,7 @@ Gestion de l'enregistrement et de la lecture de mouvements
 import json
 import time
 import threading
-from tkinter import filedialog, messagebox
+import os
 
 from config import MOTOR_NAMES, MOTOR_IDS
 
@@ -25,6 +25,7 @@ class RecordingManager:
         self.is_playing = False
         self.recorded_frames = []
         self.sample_interval_ms = 100
+        self.current_frame = 0  # Frame actuellement en cours de lecture
     
     def start_recording(self, sample_interval_ms=100, release_callback=None):
         """
@@ -73,19 +74,16 @@ class RecordingManager:
         if lock_callback:
             lock_callback()
     
-    def save_recording(self, sample_interval_ms=100):
+    def save_recording(self, sample_interval_ms=100, filepath=None):
         """Sauvegarde l'enregistrement dans un fichier JSON"""
         if not self.recorded_frames:
-            messagebox.showwarning("Attention", "Aucun enregistrement à sauvegarder")
-            return
+            return False
         
-        path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json")],
-            initialfile="recording.json"
-        )
+        if not filepath:
+            # Si aucun chemin fourni, générer un nom automatique
+            filepath = f"recording_{int(time.time())}.json"
         
-        if path:
+        if filepath:
             data = {
                 "name": "recording",
                 "sample_period_s": sample_interval_ms / 1000.0,
@@ -93,23 +91,28 @@ class RecordingManager:
                 "frames": self.recorded_frames
             }
             
-            with open(path, 'w', encoding='utf-8') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             
-            self.log(f"💾 Sauvegardé: {path}")
-    
-    def load_recording(self):
-        """Charge un enregistrement depuis un fichier JSON"""
-        path = filedialog.askopenfilename(
-            filetypes=[("JSON files", "*.json")]
-        )
+            self.log(f"💾 Sauvegardé: {filepath}")
+            return True
         
-        if path:
-            with open(path, 'r', encoding='utf-8') as f:
+        return False
+    
+    def load_recording(self, filepath=None):
+        """Charge un enregistrement depuis un fichier JSON"""
+        if not filepath:
+            return False
+        
+        if filepath and os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             self.recorded_frames = data.get('frames', [])
-            self.log(f"📂 Chargé: {path} ({len(self.recorded_frames)} frames)")
+            self.log(f"📂 Chargé: {filepath} ({len(self.recorded_frames)} frames)")
+            return True
+        
+        return False
     
     def play_recording(self, status_update_callback=None, lock_callback=None):
         """
@@ -118,10 +121,11 @@ class RecordingManager:
         lock_callback: Fonction pour verrouiller les moteurs avant la lecture
         """
         if not self.recorded_frames:
-            messagebox.showwarning("Attention", "Aucun enregistrement à lire")
+            self.log("⚠️ Aucun enregistrement à lire")
             return
         
         self.is_playing = True
+        self.current_frame = 0
         
         if lock_callback:
             lock_callback()
@@ -137,6 +141,9 @@ class RecordingManager:
                 if not self.is_playing:
                     break
                 
+                # Mettre à jour le frame actuel
+                self.current_frame = i + 1
+                
                 # Attendre le bon moment
                 target_time = t0 + (frame['t'] - base_t)
                 wait_time = target_time - time.monotonic()
@@ -145,8 +152,8 @@ class RecordingManager:
                 
                 # Écrire les positions (valeurs brutes)
                 positions_dict = {
-                    MOTOR_NAMES[i]: int(frame['pos'].get(str(MOTOR_IDS[i]), 2048))
-                    for i in range(len(MOTOR_NAMES))
+                    MOTOR_NAMES[j]: int(frame['pos'].get(str(MOTOR_IDS[j]), 2048))
+                    for j in range(len(MOTOR_NAMES))
                 }
                 
                 try:
@@ -160,6 +167,7 @@ class RecordingManager:
                     status_update_callback(i + 1, len(frames))
             
             self.is_playing = False
+            self.current_frame = 0
             self.log("✓ Lecture terminée")
         
         threading.Thread(target=play_thread, daemon=True).start()
@@ -167,4 +175,5 @@ class RecordingManager:
     def stop_playback(self):
         """Arrête la lecture"""
         self.is_playing = False
+        self.current_frame = 0
 

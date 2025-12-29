@@ -28,7 +28,8 @@ except ImportError as e:
     print(f"⚠️ LeRobot non trouvé. Erreur: {e}")
     print("\nVérifiez que vous êtes dans l'environnement conda:")
     print("  conda activate lerobot")
-    print("  python robot_gui.py")
+    print("  pip install lerobot[feetech]")
+    print("  python web_app.py")
 
 
 # Configuration SO-101 follower
