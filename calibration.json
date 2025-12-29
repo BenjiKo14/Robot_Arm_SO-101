@@ -1,0 +1,38 @@
+{
+  "shoulder_pan": {
+    "motor_id": 1,
+    "pos_left": 579,
+    "pos_right": 3214,
+    "pos_center": 1841
+  },
+  "shoulder_lift": {
+    "motor_id": 2,
+    "pos_left": 733,
+    "pos_right": 3085,
+    "pos_center": 1969
+  },
+  "elbow_flex": {
+    "motor_id": 3,
+    "pos_left": 3031,
+    "pos_right": 820,
+    "pos_center": 2040
+  },
+  "wrist_flex": {
+    "motor_id": 4,
+    "pos_left": 3164,
+    "pos_right": 860,
+    "pos_center": 2145
+  },
+  "wrist_roll": {
+    "motor_id": 5,
+    "pos_left": 2295,
+    "pos_right": 158,
+    "pos_center": 1214
+  },
+  "gripper": {
+    "motor_id": 6,
+    "pos_left": 2050,
+    "pos_right": 3445,
+    "pos_center": 2540
+  }
+}
