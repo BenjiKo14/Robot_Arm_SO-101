@@ -427,8 +427,76 @@ header h1 {
     line-height: 1;
 }
 
-.close:hover {
+.close:hover,
+.close-port-modal:hover {
     color: var(--text-primary);
+}
+
+.close-port-modal,
+.close-setup-port-modal {
+    color: var(--text-secondary);
+    float: right;
+    font-size: 32px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.close-setup-port-modal:hover,
+.close-motor-id-modal:hover {
+    color: var(--text-primary);
+}
+
+.close-motor-id-modal {
+    color: var(--text-secondary);
+    float: right;
+    font-size: 32px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.motor-id-row {
+    transition: background 0.3s ease;
+}
+
+.motor-id-row:hover {
+    background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.motor-id-row input[type="number"]:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.port-item {
+    padding: 15px;
+    margin: 10px 0;
+    border: 2px solid var(--primary-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.port-item strong {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-primary);
+}
+
+.port-item span {
+    display: block;
+    color: var(--text-secondary);
+    margin-top: 3px;
+}
+
+.port-item:hover {
+    background: rgba(74, 144, 226, 0.2);
+    border-color: var(--hover-color);
+    transform: translateX(5px);
+    box-shadow: var(--shadow);
 }
 
 .modal-tabs {

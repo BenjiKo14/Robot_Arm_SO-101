@@ -6,12 +6,16 @@ const MOTOR_IDS = [1, 2, 3, 4, 5, 6];
 let sliderEnabled = false;
 let updateInterval = null;
 let logUpdateInterval = null;
+let manualPositionsInterval = null;
+let calibrationModalOpen = false;
+let activeCalibrationTab = 'auto';
+let logUpdatesForced = false;
 
 // Initialisation
 document.addEventListener('DOMContentLoaded', () => {
     initializeUI();
-    startStatusUpdates();
-    startLogUpdates();
+    fetchInitialStatus();
+    updatePollingState();
 });
 
 function initializeUI() {
@@ -47,11 +51,15 @@ function initializeUI() {
     const closeBtn = modal.querySelector('.close');
     closeBtn.addEventListener('click', () => {
         modal.style.display = 'none';
+        calibrationModalOpen = false;
+        updatePollingState();
     });
     
     window.addEventListener('click', (e) => {
         if (e.target === modal) {
             modal.style.display = 'none';
+            calibrationModalOpen = false;
+            updatePollingState();
         }
     });
     
@@ -69,6 +77,22 @@ function initializeUI() {
     document.getElementById('lock-all-btn').addEventListener('click', lockAllMotors);
     
     setupManualCalibration();
+}
+
+async function fetchInitialStatus() {
+    try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        if (data.success) {
+            appState.is_connected = data.connected;
+            appState.port = data.port;
+            updateConnectionStatus(data.connected);
+        }
+    } catch (err) {
+        // Ignorer silencieusement
+    } finally {
+        updatePollingState();
+    }
 }
 
 function createSliders() {
@@ -148,6 +172,7 @@ async function toggleConnection() {
         if (data.success) {
             appState.is_connected = !appState.is_connected;
             updateConnectionStatus(appState.is_connected);
+            updatePollingState();
         } else {
             alert('Erreur: ' + data.error);
         }
@@ -495,14 +520,313 @@ async function updateProgress() {
     }
 }
 
-function setupMotors() {
-    alert('Cette fonctionnalité doit être exécutée dans un terminal séparé.\n\nCommande: lerobot-setup-motors --robot.type=so101_follower --robot.port=COM3');
+async function setupMotors() {
+    const btn = document.getElementById('setup-motors-btn');
+    const originalText = btn.textContent;
+    setLogUpdatesForced(true);
+    
+    // Désactiver le bouton et afficher un indicateur de chargement
+    btn.disabled = true;
+    btn.textContent = '🔍 Recherche des ports...';
+    
+    try {
+        // D'abord, récupérer la liste des ports
+        const res = await fetch('/api/find-port');
+        const data = await res.json();
+        
+        if (data.success && data.ports.length > 0) {
+            // Afficher la modal de sélection de port pour le setup
+            showPortSelectionModalForSetup(data.ports);
+        } else {
+            alert('Aucun port série trouvé.\n\n' + (data.error || 'Vérifiez que votre périphérique est connecté.'));
+        }
+    } catch (err) {
+        alert('Erreur lors de la recherche des ports: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        if (!document.getElementById('setup-port-selection-modal')?.style?.display || document.getElementById('setup-port-selection-modal').style.display === 'none') {
+            setLogUpdatesForced(false);
+        }
+    }
+}
+
+function showPortSelectionModalForSetup(ports) {
+    // Créer la modal si elle n'existe pas
+    let modal = document.getElementById('setup-port-selection-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'setup-port-selection-modal';
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <span class="close-setup-port-modal">&times;</span>
+                <h2>🔧 Configuration des Moteurs</h2>
+                <p style="margin: 15px 0; color: var(--text-secondary);">
+                    Sélectionnez le port série sur lequel configurer les IDs des moteurs.
+                </p>
+                <div id="setup-port-list" style="margin: 20px 0;"></div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Gérer la fermeture
+        modal.querySelector('.close-setup-port-modal').addEventListener('click', () => {
+            modal.style.display = 'none';
+            setLogUpdatesForced(false);
+        });
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+                setLogUpdatesForced(false);
+            }
+        });
+    }
+    
+    // Remplir la liste des ports
+    const portList = document.getElementById('setup-port-list');
+    portList.innerHTML = '';
+    
+    if (ports.length === 0) {
+        portList.innerHTML = '<p>Aucun port trouvé.</p>';
+    } else {
+        ports.forEach(port => {
+            const portItem = document.createElement('div');
+            portItem.className = 'port-item';
+            
+            let portInfo = `<strong>${port.device}</strong>`;
+            if (port.description) {
+                portInfo += `<span>${port.description}</span>`;
+            }
+            if (port.manufacturer) {
+                portInfo += `<span style="font-size: 0.9em;">${port.manufacturer}</span>`;
+            }
+            
+            portItem.innerHTML = portInfo;
+            
+            // Sélectionner le port au clic et lancer le setup
+            portItem.addEventListener('click', async () => {
+                modal.style.display = 'none';
+                await executeSetupMotors(port.device);
+            });
+            
+            portList.appendChild(portItem);
+        });
+    }
+    
+    // Afficher la modal
+    modal.style.display = 'block';
+    setLogUpdatesForced(true);
+}
+
+async function executeSetupMotors(port) {
+    const btn = document.getElementById('setup-motors-btn');
+    const originalText = btn.textContent;
+    
+    // Désactiver le bouton et afficher un indicateur de chargement
+    btn.disabled = true;
+    btn.textContent = '🔍 Lecture des IDs...';
+    
+    try {
+        // D'abord, lire les IDs actuels
+        const readRes = await fetch('/api/read-motor-ids', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port: port })
+        });
+        
+        const readData = await readRes.json();
+        
+        if (!readData.success) {
+            alert('Erreur lors de la lecture des IDs:\n\n' + (readData.error || 'Erreur inconnue'));
+            return;
+        }
+        
+        // Afficher la modal de configuration des IDs
+        showMotorIdConfigModal(port, readData);
+        
+    } catch (err) {
+        alert('Erreur lors de la lecture des IDs: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function showMotorIdConfigModal(port, data) {
+    const detectedMotors = data.detected_motors || [];
+    
+    if (detectedMotors.length === 0) {
+        alert('Aucun moteur détecté sur ce port.');
+        return;
+    }
+    
+    // Créer la modal si elle n'existe pas
+    let modal = document.getElementById('motor-id-config-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'motor-id-config-modal';
+        modal.className = 'modal';
+        document.body.appendChild(modal);
+        
+        // Gérer la fermeture
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    // Construire le contenu de la modal avec uniquement les moteurs détectés
+    let motorRows = '';
+    detectedMotors.forEach((motor, index) => {
+        const currentId = motor.current_id;
+        const motorKey = `motor_${index}`;
+        
+        motorRows += `
+            <div class="motor-id-row" style="display: grid; grid-template-columns: 150px 100px 1fr 100px; align-items: center; gap: 15px; padding: 12px; margin-bottom: 10px; background: rgba(255, 255, 255, 0.05); border-radius: 8px;">
+                <div style="font-weight: 500;">Moteur ${index + 1}</div>
+                <div style="color: var(--text-secondary);">
+                    <span style="font-size: 0.9em;">ID actuel:</span><br>
+                    <strong style="color: var(--primary-color); font-size: 1.2em;">${currentId}</strong>
+                </div>
+                <div style="text-align: center;">
+                    <span style="font-size: 0.9em; color: var(--text-secondary);">→</span>
+                </div>
+                <div>
+                    <input type="number" 
+                           id="new-id-${motorKey}" 
+                           value="${currentId}" 
+                           min="1" 
+                           max="253" 
+                           style="width: 80px; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.1); color: var(--text-primary); font-size: 1em; text-align: center;">
+                </div>
+            </div>
+        `;
+    });
+    
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 700px;">
+            <span class="close-motor-id-modal" style="color: var(--text-secondary); float: right; font-size: 32px; font-weight: bold; cursor: pointer; line-height: 1;">&times;</span>
+            <h2>🔧 Configuration des IDs des Moteurs</h2>
+            <p style="margin: 15px 0; color: var(--text-secondary);">
+                Port: <strong style="color: var(--primary-color);">${port}</strong><br>
+                ${detectedMotors.length} moteur(s) détecté(s). Modifiez les IDs si nécessaire, puis cliquez sur "Configurer".
+            </p>
+            <div style="margin: 20px 0;">
+                <div style="display: grid; grid-template-columns: 150px 100px 1fr 100px; align-items: center; gap: 15px; padding: 12px; margin-bottom: 10px; font-weight: bold; border-bottom: 2px solid var(--border-color);">
+                    <div>Moteur</div>
+                    <div>ID actuel</div>
+                    <div></div>
+                    <div>Nouvel ID</div>
+                </div>
+                ${motorRows}
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                <button class="btn btn-secondary" id="cancel-motor-id-btn">Annuler</button>
+                <button class="btn btn-primary" id="confirm-motor-id-btn">Configurer</button>
+            </div>
+        </div>
+    `;
+    
+    // Gérer la fermeture
+    modal.querySelector('.close-motor-id-modal').addEventListener('click', () => {
+        modal.style.display = 'none';
+        setLogUpdatesForced(false);
+    });
+    
+    modal.querySelector('#cancel-motor-id-btn').addEventListener('click', () => {
+        modal.style.display = 'none';
+        setLogUpdatesForced(false);
+    });
+    
+    // Gérer la confirmation
+    modal.querySelector('#confirm-motor-id-btn').addEventListener('click', async () => {
+        await confirmAndSetupMotors(port, detectedMotors);
+    });
+    
+    // Afficher la modal
+    modal.style.display = 'block';
+    setLogUpdatesForced(true);
+}
+
+async function confirmAndSetupMotors(port, detectedMotors) {
+    const modal = document.getElementById('motor-id-config-modal');
+    const btn = document.getElementById('setup-motors-btn');
+    const originalText = btn.textContent;
+    
+    // Récupérer les nouveaux IDs pour chaque moteur détecté
+    const motorIdMappings = [];
+    detectedMotors.forEach((motor, index) => {
+        const motorKey = `motor_${index}`;
+        const input = document.getElementById(`new-id-${motorKey}`);
+        if (input) {
+            const newId = parseInt(input.value);
+            const currentId = motor.current_id;
+            
+            if (newId >= 1 && newId <= 253 && newId !== currentId) {
+                // Seulement ajouter si l'ID a changé
+                motorIdMappings.push({
+                    current_id: currentId,
+                    new_id: newId
+                });
+            }
+        }
+    });
+    
+    if (motorIdMappings.length === 0) {
+        alert('Aucun changement d\'ID détecté. Les IDs sont déjà corrects.');
+        return;
+    }
+    
+    // Confirmation avant de lancer le setup
+    const idsList = motorIdMappings.map(m => `ID ${m.current_id} → ID ${m.new_id}`).join('\n');
+    if (!confirm(`Voulez-vous modifier les IDs suivants sur ${port} ?\n\n${idsList}\n\nCette opération peut prendre quelques secondes.`)) {
+        return;
+    }
+    
+    // Désactiver le bouton et afficher un indicateur de chargement
+    btn.disabled = true;
+    btn.textContent = '⏳ Configuration en cours...';
+    modal.style.display = 'none';
+    setLogUpdatesForced(true);
+    
+    try {
+        const res = await fetch('/api/setup-motors', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                port: port,
+                motor_id_mappings: motorIdMappings
+            })
+        });
+        
+        const data = await res.json();
+        
+        if (data.success) {
+            showNotification(`✓ Configuration réussie sur ${port}`, 'success');
+            // Afficher les détails dans les logs si disponibles
+            if (data.output) {
+                console.log('Sortie de configuration:', data.output);
+            }
+        } else {
+            alert('Erreur lors de la configuration:\n\n' + (data.error || 'Erreur inconnue'));
+        }
+    } catch (err) {
+        alert('Erreur lors de la configuration: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        setLogUpdatesForced(false);
+    }
 }
 
 function openCalibrationModal() {
     document.getElementById('calibration-modal').style.display = 'block';
+    calibrationModalOpen = true;
     refreshCalibration();
     setupAutoCalibrationCheckboxes();
+    updatePollingState();
 }
 
 function switchTab(tabName) {
@@ -515,6 +839,8 @@ function switchTab(tabName) {
     
     document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
     document.getElementById(`${tabName}-tab`).classList.add('active');
+    activeCalibrationTab = tabName;
+    updatePollingState();
 }
 
 function setupAutoCalibrationCheckboxes() {
@@ -616,8 +942,7 @@ function setupManualCalibration() {
     // Charger les valeurs existantes
     loadManualCalibrationValues();
     
-    // Mettre à jour les positions périodiquement
-    setInterval(updateManualPositions, 500);
+    // Les mises à jour des positions sont déclenchées uniquement quand utile
 }
 
 async function loadManualCalibrationValues() {
@@ -665,6 +990,9 @@ function updateManualCalibrationStatus(motorName, calib) {
 }
 
 async function updateManualPositions() {
+    if (!appState.is_connected || !calibrationModalOpen || activeCalibrationTab !== 'manual') {
+        return;
+    }
     try {
         const res = await fetch('/api/positions');
         const data = await res.json();
@@ -676,6 +1004,18 @@ async function updateManualPositions() {
         }
     } catch (err) {
         // Ignorer les erreurs silencieusement
+    }
+}
+
+function startManualPositionsUpdates() {
+    if (manualPositionsInterval) return;
+    manualPositionsInterval = setInterval(updateManualPositions, 500);
+}
+
+function stopManualPositionsUpdates() {
+    if (manualPositionsInterval) {
+        clearInterval(manualPositionsInterval);
+        manualPositionsInterval = null;
     }
 }
 
@@ -768,23 +1108,156 @@ async function lockAllMotors() {
     await lockMotors();
 }
 
-function findPort() {
-    alert('Cette fonctionnalité doit être exécutée dans un terminal séparé.\n\nCommande: lerobot-find-port');
+async function findPort() {
+    const btn = document.getElementById('find-port-btn');
+    const originalText = btn.textContent;
+    
+    // Désactiver le bouton et afficher un indicateur de chargement
+    btn.disabled = true;
+    btn.textContent = '🔍 Recherche...';
+    
+    try {
+        const res = await fetch('/api/find-port');
+        const data = await res.json();
+        
+        if (data.success && data.ports.length > 0) {
+            // Créer un message avec la liste des ports
+            let message = `🔍 Ports série trouvés (${data.ports.length}):\n\n`;
+            data.ports.forEach((port, index) => {
+                message += `${index + 1}. ${port.device}`;
+                if (port.description) {
+                    message += ` - ${port.description}`;
+                }
+                if (port.manufacturer) {
+                    message += ` (${port.manufacturer})`;
+                }
+                message += '\n';
+            });
+            message += '\nCliquez sur un port pour le sélectionner.';
+            
+            // Créer une modal pour afficher les ports et permettre la sélection
+            showPortSelectionModal(data.ports);
+        } else {
+            alert('Aucun port série trouvé.\n\n' + (data.error || 'Vérifiez que votre périphérique est connecté.'));
+        }
+    } catch (err) {
+        alert('Erreur lors de la recherche des ports: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function showPortSelectionModal(ports) {
+    // Créer la modal si elle n'existe pas
+    let modal = document.getElementById('port-selection-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'port-selection-modal';
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <span class="close-port-modal">&times;</span>
+                <h2>🔍 Ports Série Disponibles</h2>
+                <div id="port-list" style="margin: 20px 0;"></div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Gérer la fermeture
+        modal.querySelector('.close-port-modal').addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+    
+    // Remplir la liste des ports
+    const portList = document.getElementById('port-list');
+    portList.innerHTML = '';
+    
+    if (ports.length === 0) {
+        portList.innerHTML = '<p>Aucun port trouvé.</p>';
+    } else {
+        ports.forEach(port => {
+            const portItem = document.createElement('div');
+            portItem.className = 'port-item';
+            
+            let portInfo = `<strong>${port.device}</strong>`;
+            if (port.description) {
+                portInfo += `<span>${port.description}</span>`;
+            }
+            if (port.manufacturer) {
+                portInfo += `<span style="font-size: 0.9em;">${port.manufacturer}</span>`;
+            }
+            
+            portItem.innerHTML = portInfo;
+            
+            // Sélectionner le port au clic
+            portItem.addEventListener('click', () => {
+                document.getElementById('port-input').value = port.device;
+                modal.style.display = 'none';
+                showNotification(`Port sélectionné: ${port.device}`, 'success');
+            });
+            
+            portList.appendChild(portItem);
+        });
+    }
+    
+    // Afficher la modal
+    modal.style.display = 'block';
 }
 
 // Mise à jour périodique du statut
 let appState = { is_connected: false, port: 'COM3' };
 
-async function startStatusUpdates() {
+function updatePollingState() {
+    if (appState.is_connected) {
+        startStatusUpdates();
+        startLogUpdates();
+    } else {
+        stopStatusUpdates();
+        if (!logUpdatesForced) {
+            stopLogUpdates();
+        } else {
+            startLogUpdates();
+        }
+        stopManualPositionsUpdates();
+    }
+
+    if (appState.is_connected && calibrationModalOpen && activeCalibrationTab === 'manual') {
+        startManualPositionsUpdates();
+    } else {
+        stopManualPositionsUpdates();
+    }
+}
+
+function setLogUpdatesForced(enabled) {
+    logUpdatesForced = enabled;
+    updatePollingState();
+}
+
+function startStatusUpdates() {
+    if (updateInterval) return;
     updateInterval = setInterval(async () => {
+        if (!appState.is_connected) {
+            return;
+        }
         try {
             const res = await fetch('/api/status');
             const data = await res.json();
             
             if (data.success) {
+                const wasConnected = appState.is_connected;
                 appState.is_connected = data.connected;
                 appState.port = data.port;
                 updateConnectionStatus(data.connected);
+                if (wasConnected !== appState.is_connected) {
+                    updatePollingState();
+                }
                 
                 // Mettre à jour le statut d'enregistrement
                 const recRes = await fetch('/api/recording/status');
@@ -804,7 +1277,7 @@ async function startStatusUpdates() {
         }
         
         // Vérifier et recharger les modules Python modifiés (en mode debug)
-        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        if (appState.is_connected && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
             try {
                 const reloadRes = await fetch('/api/reload', { method: 'POST' });
                 const reloadData = await reloadRes.json();
@@ -820,6 +1293,13 @@ async function startStatusUpdates() {
             }
         }
     }, 1000);
+}
+
+function stopStatusUpdates() {
+    if (updateInterval) {
+        clearInterval(updateInterval);
+        updateInterval = null;
+    }
 }
 
 function showNotification(message, type = 'info') {
@@ -873,7 +1353,11 @@ style.textContent = `
 document.head.appendChild(style);
 
 async function startLogUpdates() {
+    if (logUpdateInterval) return;
     logUpdateInterval = setInterval(async () => {
+        if (!appState.is_connected && !logUpdatesForced) {
+            return;
+        }
         try {
             const res = await fetch('/api/logs');
             const data = await res.json();
@@ -893,5 +1377,12 @@ async function startLogUpdates() {
             // Ignorer les erreurs silencieusement
         }
     }, 2000);
+}
+
+function stopLogUpdates() {
+    if (logUpdateInterval) {
+        clearInterval(logUpdateInterval);
+        logUpdateInterval = null;
+    }
 }
 

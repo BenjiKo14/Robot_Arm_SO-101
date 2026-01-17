@@ -16,6 +16,14 @@ import importlib
 import importlib.util
 from pathlib import Path
 
+# Pour la détection des ports série
+try:
+    import serial
+    import serial.tools.list_ports
+    SERIAL_AVAILABLE = True
+except ImportError:
+    SERIAL_AVAILABLE = False
+
 # Import initial des modules
 from config import (
     MOTOR_NAMES, MOTOR_IDS, LEROBOT_AVAILABLE,
@@ -46,6 +54,60 @@ _module_paths = {
 
 # Timestamps de dernière modification
 _module_timestamps = {}
+
+# Constantes protocole STS3215 (Feetech)
+STS_REG_ID = 0x05
+STS_REG_BAUD = 0x06
+STS_REG_TORQUE_ENABLE = 0x28
+STS_REG_LOCK = 0x37
+
+STS_INST_PING = 0x01
+STS_INST_READ = 0x02
+STS_INST_WRITE = 0x03
+
+STS_DEFAULT_BAUD = 1000000
+
+def _sts_checksum(data):
+    return (~sum(data)) & 0xFF
+
+def _sts_send_packet(ser, servo_id, instruction, params=None):
+    if params is None:
+        params = []
+    length = len(params) + 2
+    packet = [0xFF, 0xFF, servo_id, length, instruction] + params
+    checksum = _sts_checksum(packet[2:])
+    packet.append(checksum)
+    ser.reset_input_buffer()
+    ser.write(bytes(packet))
+    time.sleep(0.02)
+    return ser.read(100)
+
+def _sts_ping(ser, servo_id):
+    for _ in range(3):
+        response = _sts_send_packet(ser, servo_id, STS_INST_PING, [])
+        if len(response) >= 6 and response[0] == 0xFF and response[1] == 0xFF and response[2] == servo_id:
+            return True
+        time.sleep(0.01)
+    return False
+
+def _sts_write_byte(ser, servo_id, address, value):
+    _sts_send_packet(ser, servo_id, STS_INST_WRITE, [address, value & 0xFF])
+    time.sleep(0.02)
+
+def _sts_change_id(ser, old_id, new_id):
+    if old_id == new_id:
+        return True, None
+    _sts_write_byte(ser, old_id, STS_REG_LOCK, 0)
+    _sts_write_byte(ser, old_id, STS_REG_TORQUE_ENABLE, 0)
+    _sts_write_byte(ser, old_id, STS_REG_ID, new_id)
+    time.sleep(0.2)
+    _sts_write_byte(ser, new_id, STS_REG_LOCK, 1)
+    time.sleep(0.05)
+    if _sts_ping(ser, new_id):
+        return True, None
+    if _sts_ping(ser, old_id):
+        return False, "Le servo répond toujours à l'ancien ID"
+    return False, "Le servo ne répond pas au nouvel ID"
 
 def reload_module(module_name):
     """Recharge un module Python à chaud"""
@@ -605,6 +667,246 @@ def reload_modules():
         'reloaded': reloaded,
         'message': f'Modules rechargés: {", ".join(reloaded) if reloaded else "Aucun"}'
     })
+
+@app.route('/api/find-port', methods=['GET'])
+def find_port():
+    """Trouve les ports série disponibles"""
+    ports = []
+    
+    # Méthode 1: Utiliser pyserial si disponible
+    if SERIAL_AVAILABLE:
+        try:
+            available_ports = serial.tools.list_ports.comports()
+            for port in available_ports:
+                ports.append({
+                    'device': port.device,
+                    'description': port.description,
+                    'manufacturer': port.manufacturer if port.manufacturer else '',
+                    'hwid': port.hwid
+                })
+            log(f"🔍 {len(ports)} port(s) série trouvé(s)")
+            return jsonify({
+                'success': True,
+                'ports': ports,
+                'method': 'pyserial'
+            })
+        except Exception as e:
+            log(f"⚠️ Erreur détection ports (pyserial): {e}")
+    
+    # Méthode 2: Essayer d'exécuter lerobot-find-port
+    try:
+        result = subprocess.run(
+            ['lerobot-find-port'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            # Parser la sortie de lerobot-find-port
+            output_lines = result.stdout.strip().split('\n')
+            for line in output_lines:
+                if line.strip() and not line.startswith('#'):
+                    # Format typique: COM3 - Description
+                    parts = line.split(' - ', 1)
+                    if len(parts) >= 1:
+                        device = parts[0].strip()
+                        description = parts[1].strip() if len(parts) > 1 else ''
+                        ports.append({
+                            'device': device,
+                            'description': description,
+                            'manufacturer': '',
+                            'hwid': ''
+                        })
+            log(f"🔍 {len(ports)} port(s) trouvé(s) via lerobot-find-port")
+            return jsonify({
+                'success': True,
+                'ports': ports,
+                'method': 'lerobot-find-port'
+            })
+    except FileNotFoundError:
+        log("⚠️ lerobot-find-port non trouvé")
+    except subprocess.TimeoutExpired:
+        log("⚠️ Timeout lors de l'exécution de lerobot-find-port")
+    except Exception as e:
+        log(f"⚠️ Erreur exécution lerobot-find-port: {e}")
+    
+    # Méthode 3: Sur Windows, essayer de lister COM1-COM20
+    if sys.platform == 'win32':
+        import winreg
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DEVICEMAP\SERIALCOMM"
+            )
+            i = 0
+            while True:
+                try:
+                    name, value, _ = winreg.EnumValue(key, i)
+                    ports.append({
+                        'device': value,
+                        'description': name,
+                        'manufacturer': '',
+                        'hwid': ''
+                    })
+                    i += 1
+                except (OSError, FileNotFoundError):
+                    break
+            winreg.CloseKey(key)
+            log(f"🔍 {len(ports)} port(s) trouvé(s) via registre Windows")
+            return jsonify({
+                'success': True,
+                'ports': ports,
+                'method': 'windows_registry'
+            })
+        except Exception as e:
+            log(f"⚠️ Erreur lecture registre Windows: {e}")
+    
+    # Si aucune méthode n'a fonctionné
+    return jsonify({
+        'success': False,
+        'error': 'Impossible de détecter les ports série. Installez pyserial: pip install pyserial',
+        'ports': []
+    }), 400
+
+@app.route('/api/read-motor-ids', methods=['POST'])
+def read_motor_ids():
+    """Détecte les moteurs présents sur un port et lit leurs IDs actuels"""
+    data = request.json
+    port = data.get('port')
+    
+    if not port:
+        return jsonify({'success': False, 'error': 'Port requis'}), 400
+    
+    if not SERIAL_AVAILABLE:
+        return jsonify({'success': False, 'error': 'pyserial non installé'}), 400
+    
+    ser = None
+    try:
+        log(f"🔍 Détection des moteurs sur {port}...")
+        ser = serial.Serial(port, STS_DEFAULT_BAUD, timeout=0.5)
+        time.sleep(0.1)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        detected_motors = []
+        scan_range = list(range(1, 11))
+        for motor_id in scan_range:
+            if _sts_ping(ser, motor_id):
+                detected_motors.append({
+                    'current_id': motor_id
+                })
+                log(f"  ✓ Moteur détecté: ID {motor_id}")
+        
+        if not detected_motors:
+            log("⚠️ Aucun moteur détecté sur ce port")
+            return jsonify({
+                'success': False,
+                'error': 'Aucun moteur détecté sur ce port. Vérifiez la connexion.',
+                'detected_motors': []
+            }), 400
+        
+        log(f"✓ {len(detected_motors)} moteur(s) détecté(s)")
+        
+        return jsonify({
+            'success': True,
+            'detected_motors': detected_motors
+        })
+        
+    except Exception as e:
+        if ser and ser.is_open:
+            ser.close()
+        error_msg = f'Erreur lors de la détection des moteurs: {str(e)}'
+        log(f"❌ {error_msg}")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'detected_motors': []
+        }), 400
+    finally:
+        if ser and ser.is_open:
+            ser.close()
+
+@app.route('/api/setup-motors', methods=['POST'])
+def setup_motors():
+    """Modifie de façon permanente l'ID des moteurs détectés"""
+    data = request.json
+    port = data.get('port')
+    motor_id_mappings = data.get('motor_id_mappings', [])  # Liste de {current_id, new_id}
+    
+    if not port:
+        return jsonify({'success': False, 'error': 'Port requis'}), 400
+    
+    if not SERIAL_AVAILABLE:
+        return jsonify({'success': False, 'error': 'pyserial non installé'}), 400
+    
+    if not motor_id_mappings:
+        return jsonify({'success': False, 'error': 'Aucun changement d\'ID demandé'}), 400
+    
+    current_ids = []
+    new_ids = []
+    for mapping in motor_id_mappings:
+        current_id = int(mapping.get('current_id', 0))
+        new_id = int(mapping.get('new_id', 0))
+        if current_id < 1 or current_id > 253 or new_id < 1 or new_id > 253:
+            return jsonify({'success': False, 'error': 'IDs invalides (1-253)'}), 400
+        current_ids.append(current_id)
+        new_ids.append(new_id)
+    
+    if len(set(new_ids)) != len(new_ids):
+        return jsonify({'success': False, 'error': 'IDs en doublon dans les nouveaux IDs'}), 400
+    
+    ser = None
+    try:
+        log(f"🔧 Modification permanente des IDs sur {port}...")
+        for mapping in motor_id_mappings:
+            log(f"  ID {mapping['current_id']} → ID {mapping['new_id']}")
+        
+        ser = serial.Serial(port, STS_DEFAULT_BAUD, timeout=0.5)
+        time.sleep(0.1)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        
+        remaining = {int(m['current_id']): int(m['new_id']) for m in motor_id_mappings}
+        used_ids = set(current_ids)
+        all_ids = set(current_ids + new_ids)
+        temp_id = next((i for i in range(1, 254) if i not in all_ids), None)
+        
+        def apply_change(old_id, new_id):
+            ok, err = _sts_change_id(ser, old_id, new_id)
+            if not ok:
+                raise RuntimeError(f"ID {old_id} → {new_id} échoué: {err}")
+        
+        while remaining:
+            progress = False
+            for old_id, new_id in list(remaining.items()):
+                if new_id not in remaining:
+                    apply_change(old_id, new_id)
+                    used_ids.discard(old_id)
+                    used_ids.add(new_id)
+                    del remaining[old_id]
+                    progress = True
+            if progress:
+                continue
+            if temp_id is None:
+                return jsonify({'success': False, 'error': 'Conflit d\'IDs. Changez un moteur à la fois.'}), 400
+            old_id, new_id = next(iter(remaining.items()))
+            apply_change(old_id, temp_id)
+            del remaining[old_id]
+            remaining[temp_id] = new_id
+            used_ids.discard(old_id)
+            used_ids.add(temp_id)
+        
+        return jsonify({
+            'success': True,
+            'message': f'IDs modifiés avec succès sur {port}'
+        })
+    except Exception as e:
+        error_msg = f'Erreur lors du changement d\'ID: {str(e)}'
+        log(f"❌ {error_msg}")
+        return jsonify({'success': False, 'error': error_msg}), 400
+    finally:
+        if ser and ser.is_open:
+            ser.close()
 
 @app.before_request
 def before_request():
