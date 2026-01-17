@@ -67,6 +67,9 @@ STS_INST_WRITE = 0x03
 
 STS_DEFAULT_BAUD = 1000000
 
+CLONE_LEADER_CALIB_FILE = "calibration_leader.json"
+CLONE_FOLLOWER_CALIB_FILE = "calibration_follower.json"
+
 def _sts_checksum(data):
     return (~sum(data)) & 0xFF
 
@@ -182,6 +185,20 @@ app_state = {
     'log_lock': threading.Lock()
 }
 
+# État clonage leader/follower
+clone_state = {
+    'leader_port': None,
+    'follower_port': None,
+    'leader_bus': None,
+    'follower_bus': None,
+    'leader_calibration_manager': None,
+    'follower_calibration_manager': None,
+    'running': False,
+    'thread': None,
+    'stop_event': threading.Event(),
+    'last_error': None
+}
+
 def log(message):
     """Ajoute un message au log"""
     with app_state['log_lock']:
@@ -279,6 +296,53 @@ def _get_normalized_position(motor_name, raw_pos):
     
     return normalize_position(raw_pos, pos_left, pos_right, pos_center)
 
+def _extract_lrcenter(calib):
+    """
+    Extrait (left, right, center) depuis une calibration.
+    Supporte:
+    - format manuel: pos_left/pos_right/pos_center
+    - format auto: min_position/max_position (center calculé)
+    """
+    if not calib:
+        return None, None, None
+
+    pos_left = calib.get('pos_left')
+    pos_right = calib.get('pos_right')
+    pos_center = calib.get('pos_center')
+
+    # Compat ancien/auto: min/max
+    if pos_left is None and 'min_position' in calib:
+        pos_left = calib.get('min_position')
+    if pos_right is None and 'max_position' in calib:
+        pos_right = calib.get('max_position')
+    if pos_center is None and pos_left is not None and pos_right is not None:
+        try:
+            pos_center = (int(pos_left) + int(pos_right)) // 2
+        except Exception:
+            pos_center = None
+
+    return pos_left, pos_right, pos_center
+
+def _normalize_with_calib(raw_pos, calib):
+    """Normalise une position brute avec une calibration (manuel ou auto)."""
+    pos_left, pos_right, pos_center = _extract_lrcenter(calib)
+    if pos_left is None or pos_right is None or pos_center is None:
+        return None
+    return normalize_position(raw_pos, pos_left, pos_right, pos_center)
+
+def _denormalize_with_calib(normalized, calib):
+    """Convertit une position normalisée en brut avec une calibration (manuel ou auto)."""
+    pos_left, pos_right, pos_center = _extract_lrcenter(calib)
+    if pos_left is None or pos_right is None or pos_center is None:
+        return None
+    return int(denormalize_position(normalized, pos_left, pos_right, pos_center))
+
+def _build_motor_config():
+    return {
+        name: Motor(id=motor_id, model="sts3215", norm_mode=MotorNormMode.RANGE_0_100)
+        for name, motor_id in zip(MOTOR_NAMES, MOTOR_IDS)
+    }
+
 # Routes API
 @app.route('/')
 def index():
@@ -293,6 +357,186 @@ def get_status():
         'port': app_state['port'],
         'lerobot_available': LEROBOT_AVAILABLE
     })
+
+@app.route('/api/clone/status')
+def clone_status():
+    """Retourne le statut du clonage leader/follower"""
+    return jsonify({
+        'success': True,
+        'running': clone_state['running'],
+        'leader_port': clone_state['leader_port'],
+        'follower_port': clone_state['follower_port'],
+        'last_error': clone_state['last_error']
+    })
+
+def _stop_clone_internal():
+    if clone_state['running']:
+        clone_state['stop_event'].set()
+        if clone_state['thread']:
+            clone_state['thread'].join(timeout=2)
+    clone_state['running'] = False
+    clone_state['thread'] = None
+    clone_state['stop_event'].clear()
+    clone_state['last_error'] = None
+    if clone_state['leader_bus']:
+        try:
+            clone_state['leader_bus'].disconnect()
+        except Exception:
+            pass
+    if clone_state['follower_bus']:
+        try:
+            clone_state['follower_bus'].disconnect()
+        except Exception:
+            pass
+    clone_state['leader_bus'] = None
+    clone_state['follower_bus'] = None
+    clone_state['leader_calibration_manager'] = None
+    clone_state['follower_calibration_manager'] = None
+
+def _clone_thread_loop():
+    leader_bus = clone_state['leader_bus']
+    follower_bus = clone_state['follower_bus']
+    leader_calib = clone_state['leader_calibration_manager']
+    follower_calib = clone_state['follower_calibration_manager']
+
+    try:
+        for name in MOTOR_NAMES:
+            try:
+                follower_bus.write("Torque_Enable", name, 1, normalize=False)
+            except Exception:
+                pass
+
+        while not clone_state['stop_event'].is_set():
+            try:
+                positions = leader_bus.sync_read("Present_Position", motors=MOTOR_NAMES, normalize=False)
+                for name in MOTOR_NAMES:
+                    raw = int(positions.get(name, 0))
+                    norm = _normalize_with_calib(raw, leader_calib.calibrations.get(name) if leader_calib else None)
+                    if norm is not None:
+                        target = _denormalize_with_calib(norm, follower_calib.calibrations.get(name) if follower_calib else None)
+                    else:
+                        target = raw
+                    if target is None:
+                        target = raw
+                    follower_bus.write("Goal_Position", name, int(target), normalize=False)
+                    time.sleep(0.002)
+                time.sleep(0.02)
+            except Exception as e:
+                clone_state['last_error'] = str(e)
+                log(f"❌ Clonage arrêté: {e}")
+                clone_state['stop_event'].set()
+    finally:
+        clone_state['running'] = False
+
+@app.route('/api/clone/start', methods=['POST'])
+def clone_start():
+    """Démarre le clonage leader/follower"""
+    data = request.json
+    leader_port = data.get('leader_port')
+    follower_port = data.get('follower_port')
+
+    if not leader_port or not follower_port:
+        return jsonify({'success': False, 'error': 'Ports leader/follower requis'}), 400
+    if leader_port == follower_port:
+        return jsonify({'success': False, 'error': 'Leader et follower doivent être sur des ports différents'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Clonage déjà en cours'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+
+    try:
+        log(f"🧬 Démarrage clonage {leader_port} → {follower_port}")
+        motor_config = _build_motor_config()
+
+        leader_bus = FeetechMotorsBus(port=leader_port, motors=motor_config)
+        follower_bus = FeetechMotorsBus(port=follower_port, motors=motor_config)
+        leader_bus.connect()
+        follower_bus.connect()
+
+        leader_calib = CalibrationManager(leader_bus, log)
+        follower_calib = CalibrationManager(follower_bus, log)
+        leader_calib.calibration_file = CLONE_LEADER_CALIB_FILE
+        follower_calib.calibration_file = CLONE_FOLLOWER_CALIB_FILE
+        leader_calib.load_calibration_from_file()
+        follower_calib.load_calibration_from_file()
+
+        clone_state['leader_port'] = leader_port
+        clone_state['follower_port'] = follower_port
+        clone_state['leader_bus'] = leader_bus
+        clone_state['follower_bus'] = follower_bus
+        clone_state['leader_calibration_manager'] = leader_calib
+        clone_state['follower_calibration_manager'] = follower_calib
+        clone_state['last_error'] = None
+
+        clone_state['running'] = True
+        clone_state['stop_event'].clear()
+        clone_state['thread'] = threading.Thread(target=_clone_thread_loop, daemon=True)
+        clone_state['thread'].start()
+
+        return jsonify({
+            'success': True,
+            'running': True,
+            'leader_port': leader_port,
+            'follower_port': follower_port
+        })
+    except Exception as e:
+        _stop_clone_internal()
+        log(f"❌ Erreur démarrage clonage: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/api/clone/stop', methods=['POST'])
+def clone_stop():
+    """Arrête le clonage leader/follower"""
+    _stop_clone_internal()
+    log("🧬 Clonage arrêté")
+    return jsonify({'success': True, 'running': False})
+
+def _start_clone_calibration(port, calib_file):
+    motor_config = _build_motor_config()
+    motors = FeetechMotorsBus(port=port, motors=motor_config)
+    motors.connect()
+    calib_mgr = CalibrationManager(motors, log)
+    calib_mgr.calibration_file = calib_file
+
+    def calib_thread():
+        try:
+            for motor_name in MOTOR_NAMES:
+                motor_id = MOTOR_IDS[MOTOR_NAMES.index(motor_name)]
+                calib_mgr.calibrate_motor_auto(motor_name, motor_id, log)
+            calib_mgr.save_calibration_to_file()
+        finally:
+            try:
+                motors.disconnect()
+            except Exception:
+                pass
+
+    threading.Thread(target=calib_thread, daemon=True).start()
+
+@app.route('/api/clone/calibration/leader', methods=['POST'])
+def clone_calibration_leader():
+    data = request.json
+    port = data.get('port')
+    if not port:
+        return jsonify({'success': False, 'error': 'Port leader requis'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Arrêtez le clonage avant calibration'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+    _start_clone_calibration(port, CLONE_LEADER_CALIB_FILE)
+    return jsonify({'success': True})
+
+@app.route('/api/clone/calibration/follower', methods=['POST'])
+def clone_calibration_follower():
+    data = request.json
+    port = data.get('port')
+    if not port:
+        return jsonify({'success': False, 'error': 'Port follower requis'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Arrêtez le clonage avant calibration'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+    _start_clone_calibration(port, CLONE_FOLLOWER_CALIB_FILE)
+    return jsonify({'success': True})
 
 @app.route('/api/connect', methods=['POST'])
 def connect():
@@ -645,6 +889,261 @@ def calibrate_manual():
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+
+def _get_clone_calib_file(role):
+    if role == 'leader':
+        return CLONE_LEADER_CALIB_FILE
+    if role == 'follower':
+        return CLONE_FOLLOWER_CALIB_FILE
+    return None
+
+def _build_calibration_info(calibrations):
+    info = {}
+    for motor_name in MOTOR_NAMES:
+        if motor_name in calibrations:
+            calib = calibrations[motor_name]
+            info[motor_name] = {
+                'pos_left': calib.get('pos_left'),
+                'pos_right': calib.get('pos_right'),
+                'pos_center': calib.get('pos_center')
+            }
+        else:
+            info[motor_name] = {
+                'pos_left': None,
+                'pos_right': None,
+                'pos_center': None
+            }
+    return info
+
+def _read_calibration_file_raw(filepath):
+    """Lit un fichier calibration sans filtrer (accepte valeurs partielles)."""
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _write_calibration_file_raw(filepath, data):
+    """Écrit un fichier calibration (format dict), en conservant les valeurs partielles."""
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def _normalize_calib_entry(entry):
+    """Normalise une entrée calibration en {motor_id,pos_left,pos_right,pos_center} sans exclure les None."""
+    if not isinstance(entry, dict):
+        return {'motor_id': None, 'pos_left': None, 'pos_right': None, 'pos_center': None}
+
+    motor_id = entry.get('motor_id')
+    pos_left = entry.get('pos_left')
+    pos_right = entry.get('pos_right')
+    pos_center = entry.get('pos_center')
+
+    # Compatibilité ancien format min/max
+    if pos_left is None and 'min_position' in entry:
+        pos_left = entry.get('min_position')
+    if pos_right is None and 'max_position' in entry:
+        pos_right = entry.get('max_position')
+    if pos_center is None and pos_left is not None and pos_right is not None:
+        pos_center = (int(pos_left) + int(pos_right)) // 2
+
+    return {
+        'motor_id': motor_id,
+        'pos_left': pos_left,
+        'pos_right': pos_right,
+        'pos_center': pos_center
+    }
+
+@app.route('/api/clone/calibration/info', methods=['POST'])
+def clone_calibration_info():
+    data = request.json
+    role = data.get('role')
+    calib_file = _get_clone_calib_file(role)
+    if not calib_file:
+        return jsonify({'success': False, 'error': 'Rôle invalide'}), 400
+    raw = _read_calibration_file_raw(calib_file)
+    # Retourner exactement comme la calibration ordinaire: valeurs potentiellement partielles.
+    calibrations = {}
+    for motor_name in MOTOR_NAMES:
+        if motor_name in raw:
+            calibrations[motor_name] = _normalize_calib_entry(raw[motor_name])
+        else:
+            calibrations[motor_name] = {'motor_id': MOTOR_IDS[MOTOR_NAMES.index(motor_name)], 'pos_left': None, 'pos_right': None, 'pos_center': None}
+    return jsonify({'success': True, 'calibrations': _build_calibration_info(calibrations)})
+
+@app.route('/api/clone/positions', methods=['POST'])
+def clone_positions():
+    data = request.json
+    role = data.get('role')
+    port = data.get('port')
+    if not port or role not in ('leader', 'follower'):
+        return jsonify({'success': False, 'error': 'Port ou rôle invalide'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+    motor_config = _build_motor_config()
+    motors = FeetechMotorsBus(port=port, motors=motor_config)
+    try:
+        motors.connect()
+        positions = motors.sync_read("Present_Position", motors=MOTOR_NAMES, normalize=False)
+        result = {}
+        for name in MOTOR_NAMES:
+            raw_pos = int(positions.get(name, 0))
+            result[name] = {'raw': raw_pos}
+        return jsonify({'success': True, 'positions': result})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    finally:
+        try:
+            motors.disconnect()
+        except Exception:
+            pass
+
+def _clone_set_torque(port, enable: bool):
+    motor_config = _build_motor_config()
+    motors = FeetechMotorsBus(port=port, motors=motor_config)
+    try:
+        motors.connect()
+        for name in MOTOR_NAMES:
+            try:
+                motors.write("Torque_Enable", name, 1 if enable else 0, normalize=False)
+            except Exception:
+                pass
+        return True, None
+    except Exception as e:
+        return False, str(e)
+    finally:
+        try:
+            motors.disconnect()
+        except Exception:
+            pass
+
+@app.route('/api/clone/motors/release', methods=['POST'])
+def clone_release_motors():
+    data = request.json
+    role = data.get('role')
+    port = data.get('port')
+    if not port or role not in ('leader', 'follower'):
+        return jsonify({'success': False, 'error': 'Port ou rôle invalide'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Arrêtez le clonage avant relâchement'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+    ok, err = _clone_set_torque(port, enable=False)
+    if not ok:
+        return jsonify({'success': False, 'error': err}), 400
+    log(f"🔓 [{role}] Moteurs relâchés sur {port}")
+    return jsonify({'success': True})
+
+@app.route('/api/clone/motors/lock', methods=['POST'])
+def clone_lock_motors():
+    data = request.json
+    role = data.get('role')
+    port = data.get('port')
+    if not port or role not in ('leader', 'follower'):
+        return jsonify({'success': False, 'error': 'Port ou rôle invalide'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Arrêtez le clonage avant verrouillage'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+    ok, err = _clone_set_torque(port, enable=True)
+    if not ok:
+        return jsonify({'success': False, 'error': err}), 400
+    log(f"🔒 [{role}] Moteurs verrouillés sur {port}")
+    return jsonify({'success': True})
+
+@app.route('/api/clone/calibration/auto', methods=['POST'])
+def clone_calibration_auto():
+    data = request.json
+    role = data.get('role')
+    port = data.get('port')
+    motors_list = data.get('motors', MOTOR_NAMES)
+    if not port or role not in ('leader', 'follower'):
+        return jsonify({'success': False, 'error': 'Port ou rôle invalide'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Arrêtez le clonage avant calibration'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+
+    calib_file = _get_clone_calib_file(role)
+    motor_config = _build_motor_config()
+    motors = FeetechMotorsBus(port=port, motors=motor_config)
+    calib_mgr = CalibrationManager(motors, log, calibration_file=calib_file)
+
+    def calibration_thread():
+        try:
+            motors.connect()
+            for motor_name in motors_list:
+                if motor_name not in MOTOR_NAMES:
+                    continue
+                motor_id = MOTOR_IDS[MOTOR_NAMES.index(motor_name)]
+                calib_mgr.calibrate_motor_auto(motor_name, motor_id, log)
+            calib_mgr.save_calibration_to_file()
+        finally:
+            try:
+                motors.disconnect()
+            except Exception:
+                pass
+
+    threading.Thread(target=calibration_thread, daemon=True).start()
+    return jsonify({'success': True})
+
+@app.route('/api/clone/calibration/manual', methods=['POST'])
+def clone_calibration_manual():
+    data = request.json
+    role = data.get('role')
+    port = data.get('port')
+    motor_name = data.get('motor')
+    position_type = data.get('type')
+    if not port or role not in ('leader', 'follower'):
+        return jsonify({'success': False, 'error': 'Port ou rôle invalide'}), 400
+    if motor_name not in MOTOR_NAMES:
+        return jsonify({'success': False, 'error': 'Moteur invalide'}), 400
+    if position_type not in ('left', 'right', 'center'):
+        return jsonify({'success': False, 'error': 'Type invalide'}), 400
+    if clone_state['running']:
+        return jsonify({'success': False, 'error': 'Arrêtez le clonage avant calibration'}), 400
+    if not LEROBOT_AVAILABLE:
+        return jsonify({'success': False, 'error': 'LeRobot non installé'}), 400
+
+    calib_file = _get_clone_calib_file(role)
+    motor_config = _build_motor_config()
+    motors = FeetechMotorsBus(port=port, motors=motor_config)
+
+    try:
+        motors.connect()
+        pos = motors.read("Present_Position", motor_name, normalize=False, num_retry=2)
+        pos_int = int(pos)
+
+        # Charger et mettre à jour SANS filtrer (même logique que calibration ordinaire)
+        raw = _read_calibration_file_raw(calib_file)
+        if motor_name not in raw or not isinstance(raw.get(motor_name), dict):
+            raw[motor_name] = {
+                'motor_id': MOTOR_IDS[MOTOR_NAMES.index(motor_name)],
+                'pos_left': None,
+                'pos_right': None,
+                'pos_center': None
+            }
+        raw[motor_name][f'pos_{position_type}'] = pos_int
+
+        ok, err = _write_calibration_file_raw(calib_file, raw)
+        if not ok:
+            return jsonify({'success': False, 'error': err}), 400
+
+        log(f"✓ [{role}] {motor_name}: {position_type} = {pos_int}")
+        return jsonify({'success': True, 'position': pos_int})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    finally:
+        try:
+            motors.disconnect()
+        except Exception:
+            pass
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():

@@ -84,6 +84,34 @@
             </div>
         </section>
 
+        <!-- Section Clonage -->
+        <section class="card">
+            <h2>🧬 Clonage (Leader → Follower)</h2>
+            <div class="clone-panel">
+                <div class="input-group">
+                    <label for="clone-leader-port">Port Leader:</label>
+                    <select id="clone-leader-port">
+                        <option value="">-- Sélectionner --</option>
+                    </select>
+                    <button id="clone-refresh-ports-btn" class="btn btn-small">↻ Ports</button>
+                </div>
+                <div class="input-group">
+                    <label for="clone-follower-port">Port Follower:</label>
+                    <select id="clone-follower-port">
+                        <option value="">-- Sélectionner --</option>
+                    </select>
+                </div>
+                <div class="clone-buttons">
+                    <button id="clone-calibrate-leader-btn" class="btn btn-secondary">📐 Calibrer Leader</button>
+                    <button id="clone-calibrate-follower-btn" class="btn btn-secondary">📐 Calibrer Follower</button>
+                    <button id="clone-toggle-btn" class="btn btn-primary">▶ Démarrer le clonage</button>
+                </div>
+                <div class="clone-status">
+                    <span id="clone-status-text">Clonage arrêté</span>
+                </div>
+            </div>
+        </section>
+
         <!-- Section Outils -->
         <section class="card">
             <h2>🔧 Outils</h2>

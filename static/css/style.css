@@ -158,7 +158,30 @@ header h1 {
     width: 120px;
 }
 
+.input-group select {
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    font-size: 1em;
+    min-width: 160px;
+}
+
+.input-group select option {
+    /* Windows peut afficher la liste déroulante avec fond clair :
+       on force une couleur lisible pour éviter blanc sur blanc */
+    color: #111;
+    background: #fff;
+}
+
 .input-group input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.input-group select:focus {
     outline: none;
     border-color: var(--primary-color);
     background: rgba(255, 255, 255, 0.15);
@@ -310,6 +333,26 @@ header h1 {
     display: flex;
     flex-direction: column;
     gap: 15px;
+}
+
+/* Clonage */
+.clone-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.clone-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.clone-status {
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    min-height: 30px;
 }
 
 .recording-controls {

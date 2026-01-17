@@ -18,7 +18,7 @@ from normalization import detect_wrap_around
 class CalibrationManager:
     """Gère la calibration des moteurs"""
     
-    def __init__(self, motors_bus, log_callback=None):
+    def __init__(self, motors_bus, log_callback=None, calibration_file=None):
         """
         motors_bus: Instance de FeetechMotorsBus
         log_callback: Fonction pour logger les messages
@@ -28,7 +28,7 @@ class CalibrationManager:
         
         # Stockage des calibrations (motor_name -> {motor_id, pos_left, pos_right, pos_center})
         self.calibrations = {}
-        self.calibration_file = DEFAULT_CALIBRATION_FILE
+        self.calibration_file = calibration_file or DEFAULT_CALIBRATION_FILE
     
     def create_motor_calibration(self, motor_id, min_pos, max_pos):
         """Crée un objet MotorCalibration avec la bonne signature (adaptatif)"""

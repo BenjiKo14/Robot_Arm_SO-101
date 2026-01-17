@@ -10,6 +10,10 @@ let manualPositionsInterval = null;
 let calibrationModalOpen = false;
 let activeCalibrationTab = 'auto';
 let logUpdatesForced = false;
+let cloneRunning = false;
+let cloneStatusInterval = null;
+let calibrationTargetRole = 'default';
+let calibrationTargetPort = '';
 
 // Initialisation
 document.addEventListener('DOMContentLoaded', () => {
@@ -45,6 +49,12 @@ function initializeUI() {
     document.getElementById('setup-motors-btn').addEventListener('click', setupMotors);
     document.getElementById('calibrate-btn').addEventListener('click', openCalibrationModal);
     document.getElementById('find-port-btn').addEventListener('click', findPort);
+
+    // Clonage
+    document.getElementById('clone-refresh-ports-btn').addEventListener('click', refreshClonePorts);
+    document.getElementById('clone-calibrate-leader-btn').addEventListener('click', () => openCalibrationModalForRole('leader'));
+    document.getElementById('clone-calibrate-follower-btn').addEventListener('click', () => openCalibrationModalForRole('follower'));
+    document.getElementById('clone-toggle-btn').addEventListener('click', toggleClone);
     
     // Modal
     const modal = document.getElementById('calibration-modal');
@@ -52,6 +62,8 @@ function initializeUI() {
     closeBtn.addEventListener('click', () => {
         modal.style.display = 'none';
         calibrationModalOpen = false;
+        calibrationTargetRole = 'default';
+        calibrationTargetPort = '';
         updatePollingState();
     });
     
@@ -59,6 +71,8 @@ function initializeUI() {
         if (e.target === modal) {
             modal.style.display = 'none';
             calibrationModalOpen = false;
+            calibrationTargetRole = 'default';
+            calibrationTargetPort = '';
             updatePollingState();
         }
     });
@@ -77,6 +91,7 @@ function initializeUI() {
     document.getElementById('lock-all-btn').addEventListener('click', lockAllMotors);
     
     setupManualCalibration();
+    refreshClonePorts();
 }
 
 async function fetchInitialStatus() {
@@ -228,7 +243,16 @@ async function goHome() {
 
 async function refreshCalibration() {
     try {
-        const res = await fetch('/api/calibration/info');
+        let res;
+        if (calibrationTargetRole === 'default') {
+            res = await fetch('/api/calibration/info');
+        } else {
+            res = await fetch('/api/clone/calibration/info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort })
+            });
+        }
         const data = await res.json();
         
         if (data.success) {
@@ -821,7 +845,166 @@ async function confirmAndSetupMotors(port, detectedMotors) {
     }
 }
 
+async function refreshClonePorts() {
+    const leaderSelect = document.getElementById('clone-leader-port');
+    const followerSelect = document.getElementById('clone-follower-port');
+    const leaderValue = leaderSelect.value;
+    const followerValue = followerSelect.value;
+
+    try {
+        const res = await fetch('/api/find-port');
+        const data = await res.json();
+
+        if (!data.success) {
+            alert('Erreur ports: ' + (data.error || 'Erreur inconnue'));
+            return;
+        }
+
+        const ports = data.ports || [];
+        const options = ['<option value="">-- Sélectionner --</option>']
+            .concat(ports.map(p => `<option value="${p.device}">${p.device}</option>`));
+
+        leaderSelect.innerHTML = options.join('');
+        followerSelect.innerHTML = options.join('');
+
+        if (ports.some(p => p.device === leaderValue)) {
+            leaderSelect.value = leaderValue;
+        }
+        if (ports.some(p => p.device === followerValue)) {
+            followerSelect.value = followerValue;
+        }
+    } catch (err) {
+        alert('Erreur chargement ports: ' + err.message);
+    }
+}
+
+async function toggleClone() {
+    if (cloneRunning) {
+        await stopClone();
+    } else {
+        await startClone();
+    }
+}
+
+async function startClone() {
+    const leaderPort = document.getElementById('clone-leader-port').value;
+    const followerPort = document.getElementById('clone-follower-port').value;
+
+    if (!leaderPort || !followerPort) {
+        alert('Sélectionnez les ports leader et follower.');
+        return;
+    }
+    if (leaderPort === followerPort) {
+        alert('Leader et follower doivent être sur des ports différents.');
+        return;
+    }
+
+    setLogUpdatesForced(true);
+    try {
+        const res = await fetch('/api/clone/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ leader_port: leaderPort, follower_port: followerPort })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert('Erreur clonage: ' + (data.error || 'Erreur inconnue'));
+            setLogUpdatesForced(false);
+            return;
+        }
+        cloneRunning = true;
+        updateCloneStatusUI(data);
+        startCloneStatusUpdates();
+    } catch (err) {
+        alert('Erreur clonage: ' + err.message);
+        setLogUpdatesForced(false);
+    }
+}
+
+async function stopClone() {
+    try {
+        const res = await fetch('/api/clone/stop', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            alert('Erreur arrêt: ' + (data.error || 'Erreur inconnue'));
+            return;
+        }
+        cloneRunning = false;
+        updateCloneStatusUI(data);
+        stopCloneStatusUpdates();
+        setLogUpdatesForced(false);
+    } catch (err) {
+        alert('Erreur arrêt: ' + err.message);
+    }
+}
+
+function startCloneStatusUpdates() {
+    if (cloneStatusInterval) return;
+    cloneStatusInterval = setInterval(fetchCloneStatus, 1000);
+}
+
+function stopCloneStatusUpdates() {
+    if (cloneStatusInterval) {
+        clearInterval(cloneStatusInterval);
+        cloneStatusInterval = null;
+    }
+}
+
+async function fetchCloneStatus() {
+    try {
+        const res = await fetch('/api/clone/status');
+        const data = await res.json();
+        if (data.success) {
+            cloneRunning = data.running;
+            updateCloneStatusUI(data);
+            if (!cloneRunning) {
+                stopCloneStatusUpdates();
+                setLogUpdatesForced(false);
+            }
+        }
+    } catch (err) {
+        // Ignorer
+    }
+}
+
+function updateCloneStatusUI(data) {
+    const statusEl = document.getElementById('clone-status-text');
+    const toggleBtn = document.getElementById('clone-toggle-btn');
+    if (data && data.running) {
+        statusEl.textContent = `Clonage actif (${data.leader_port} → ${data.follower_port})`;
+        toggleBtn.textContent = '⏹ Arrêter le clonage';
+        toggleBtn.classList.remove('btn-primary');
+        toggleBtn.classList.add('btn-danger');
+    } else {
+        statusEl.textContent = 'Clonage arrêté';
+        toggleBtn.textContent = '▶ Démarrer le clonage';
+        toggleBtn.classList.add('btn-primary');
+        toggleBtn.classList.remove('btn-danger');
+    }
+}
+
 function openCalibrationModal() {
+    calibrationTargetRole = 'default';
+    calibrationTargetPort = '';
+    document.getElementById('calibration-modal').style.display = 'block';
+    calibrationModalOpen = true;
+    refreshCalibration();
+    setupAutoCalibrationCheckboxes();
+    updatePollingState();
+}
+
+function openCalibrationModalForRole(role) {
+    const leaderPort = document.getElementById('clone-leader-port').value;
+    const followerPort = document.getElementById('clone-follower-port').value;
+    const port = role === 'leader' ? leaderPort : followerPort;
+
+    if (!port) {
+        alert(`Sélectionnez d'abord le port ${role}.`);
+        return;
+    }
+
+    calibrationTargetRole = role;
+    calibrationTargetPort = port;
     document.getElementById('calibration-modal').style.display = 'block';
     calibrationModalOpen = true;
     refreshCalibration();
@@ -875,11 +1058,19 @@ async function startAutoCalibration() {
     logDiv.innerHTML = '<div>Démarrage de la calibration...</div>';
     
     try {
-        await fetch('/api/calibration/auto', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ motors: motors })
-        });
+        if (calibrationTargetRole === 'default') {
+            await fetch('/api/calibration/auto', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ motors: motors })
+            });
+        } else {
+            await fetch('/api/clone/calibration/auto', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort, motors: motors })
+            });
+        }
         
         // Mettre à jour les logs périodiquement
         const logInterval = setInterval(async () => {
@@ -947,7 +1138,16 @@ function setupManualCalibration() {
 
 async function loadManualCalibrationValues() {
     try {
-        const res = await fetch('/api/calibration/info');
+        let res;
+        if (calibrationTargetRole === 'default') {
+            res = await fetch('/api/calibration/info');
+        } else {
+            res = await fetch('/api/clone/calibration/info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort })
+            });
+        }
         const data = await res.json();
         
         if (data.success) {
@@ -990,11 +1190,23 @@ function updateManualCalibrationStatus(motorName, calib) {
 }
 
 async function updateManualPositions() {
-    if (!appState.is_connected || !calibrationModalOpen || activeCalibrationTab !== 'manual') {
+    if (!calibrationModalOpen || activeCalibrationTab !== 'manual') {
+        return;
+    }
+    if (calibrationTargetRole === 'default' && !appState.is_connected) {
         return;
     }
     try {
-        const res = await fetch('/api/positions');
+        let res;
+        if (calibrationTargetRole === 'default') {
+            res = await fetch('/api/positions');
+        } else {
+            res = await fetch('/api/clone/positions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort })
+            });
+        }
         const data = await res.json();
         
         if (data.success) {
@@ -1021,11 +1233,20 @@ function stopManualPositionsUpdates() {
 
 async function recordManualPosition(motorName, positionType) {
     try {
-        const res = await fetch('/api/calibration/manual', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ motor: motorName, type: positionType })
-        });
+        let res;
+        if (calibrationTargetRole === 'default') {
+            res = await fetch('/api/calibration/manual', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ motor: motorName, type: positionType })
+            });
+        } else {
+            res = await fetch('/api/clone/calibration/manual', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort, motor: motorName, type: positionType })
+            });
+        }
         
         const data = await res.json();
         if (data.success) {
@@ -1047,7 +1268,16 @@ async function recordManualPosition(motorName, positionType) {
             
             // Recharger toutes les valeurs pour mettre à jour le statut
             setTimeout(async () => {
-                const calibRes = await fetch('/api/calibration/info');
+                let calibRes;
+                if (calibrationTargetRole === 'default') {
+                    calibRes = await fetch('/api/calibration/info');
+                } else {
+                    calibRes = await fetch('/api/clone/calibration/info', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort })
+                    });
+                }
                 const calibData = await calibRes.json();
                 if (calibData.success) {
                     const calib = calibData.calibrations[motorName];
@@ -1101,11 +1331,43 @@ async function resetManualCalibration(motorName) {
 }
 
 async function releaseAllMotors() {
-    await releaseMotors();
+    if (calibrationTargetRole === 'default') {
+        await releaseMotors();
+        return;
+    }
+    try {
+        const res = await fetch('/api/clone/motors/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert('Erreur relâchement: ' + (data.error || 'Erreur inconnue'));
+        }
+    } catch (err) {
+        alert('Erreur relâchement: ' + err.message);
+    }
 }
 
 async function lockAllMotors() {
-    await lockMotors();
+    if (calibrationTargetRole === 'default') {
+        await lockMotors();
+        return;
+    }
+    try {
+        const res = await fetch('/api/clone/motors/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert('Erreur verrouillage: ' + (data.error || 'Erreur inconnue'));
+        }
+    } catch (err) {
+        alert('Erreur verrouillage: ' + err.message);
+    }
 }
 
 async function findPort() {
@@ -1228,8 +1490,12 @@ function updatePollingState() {
         stopManualPositionsUpdates();
     }
 
-    if (appState.is_connected && calibrationModalOpen && activeCalibrationTab === 'manual') {
-        startManualPositionsUpdates();
+    if (calibrationModalOpen && activeCalibrationTab === 'manual') {
+        if (appState.is_connected || calibrationTargetRole !== 'default') {
+            startManualPositionsUpdates();
+        } else {
+            stopManualPositionsUpdates();
+        }
     } else {
         stopManualPositionsUpdates();
     }
