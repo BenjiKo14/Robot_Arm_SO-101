@@ -106,6 +106,45 @@
             </div>
         </section>
 
+        <!-- Section Vision Embarquée (Caméra Follower) -->
+        <section class="card camera-card">
+            <div class="card-header-flex">
+                <h2>📷 Vision Embarquée (Caméra Follower)</h2>
+                <div class="camera-header-badges">
+                    <span id="camera-status-badge" class="status-badge disconnected">Caméra inactive</span>
+                </div>
+            </div>
+
+            <div class="camera-toolbar">
+                <div class="camera-select-group">
+                    <label for="camera-index-select">Source vidéo :</label>
+                    <select id="camera-index-select" class="port-select">
+                        <option value="0">Caméra 0 (Par défaut)</option>
+                        <option value="1">Caméra 1</option>
+                        <option value="2">Caméra 2</option>
+                    </select>
+                    <button id="camera-detect-btn" class="btn btn-secondary btn-small" title="Rechercher les webcams branchées">↻ Détecter</button>
+                    <button id="camera-toggle-btn" class="btn btn-primary btn-small">▶ Activer Caméra</button>
+                </div>
+
+                <div class="camera-quick-tools">
+                    <button id="camera-crosshair-btn" class="btn btn-secondary btn-small active-tool" title="Afficher/Masquer le réticule de visée central">🎯 Réticule</button>
+                    <button id="camera-rotate-btn" class="btn btn-secondary btn-small" title="Pivoter l'image de 180° (si webcam montée à l'envers)">🔄 Rotation 180°</button>
+                    <button id="camera-flip-btn" class="btn btn-secondary btn-small" title="Inverser gauche/droite (miroir)">↔️ Miroir</button>
+                    <button id="camera-snapshot-btn" class="btn btn-success btn-small" disabled title="Capturer et télécharger une photo">📸 Snapshot</button>
+                </div>
+            </div>
+
+            <div class="camera-viewport-wrapper">
+                <div id="camera-placeholder" class="camera-placeholder">
+                    <div class="camera-placeholder-icon">📷</div>
+                    <p class="placeholder-title">Flux vidéo inactif</p>
+                    <span class="placeholder-desc">Sélectionnez votre webcam et cliquez sur « ▶ Activer Caméra » pour voir ce que voit le robot Follower.</span>
+                </div>
+                <img id="camera-stream-img" class="camera-stream-img" src="" alt="Flux caméra Follower" style="display: none;">
+            </div>
+        </section>
+
         <!-- Section Sliders -->
         <section class="card">
             <h2>🎚️ Contrôle Manuel des Moteurs</h2>

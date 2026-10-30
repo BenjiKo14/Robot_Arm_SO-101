@@ -22,11 +22,26 @@ let armsState = {
     teleop: { running: false, can_start: false }
 };
 
+// État de la caméra embarquée
+let cameraState = {
+    connected: false,
+    index: 0,
+    width: 640,
+    height: 480,
+    fps: 0,
+    settings: {
+        show_crosshair: true,
+        rotate_180: false,
+        flip_h: false
+    }
+};
+
 // Initialisation
 document.addEventListener('DOMContentLoaded', () => {
     initializeUI();
     fetchInitialStatus();
     refreshAllPorts();
+    detectCameras();
     updatePollingState();
 });
 
@@ -94,6 +109,25 @@ function initializeUI() {
     document.getElementById('release-btn').addEventListener('click', releaseMotors);
     document.getElementById('lock-btn').addEventListener('click', lockMotors);
     document.getElementById('home-btn').addEventListener('click', goHome);
+
+    // Vision Embarquée (Caméra Follower)
+    const camToggleBtn = document.getElementById('camera-toggle-btn');
+    if (camToggleBtn) camToggleBtn.addEventListener('click', toggleCamera);
+
+    const camDetectBtn = document.getElementById('camera-detect-btn');
+    if (camDetectBtn) camDetectBtn.addEventListener('click', detectCameras);
+
+    const camCrosshairBtn = document.getElementById('camera-crosshair-btn');
+    if (camCrosshairBtn) camCrosshairBtn.addEventListener('click', () => toggleCameraSetting('show_crosshair'));
+
+    const camRotateBtn = document.getElementById('camera-rotate-btn');
+    if (camRotateBtn) camRotateBtn.addEventListener('click', () => toggleCameraSetting('rotate_180'));
+
+    const camFlipBtn = document.getElementById('camera-flip-btn');
+    if (camFlipBtn) camFlipBtn.addEventListener('click', () => toggleCameraSetting('flip_h'));
+
+    const camSnapshotBtn = document.getElementById('camera-snapshot-btn');
+    if (camSnapshotBtn) camSnapshotBtn.addEventListener('click', takeCameraSnapshot);
     
     // Sliders
     document.getElementById('slider-enable-checkbox').addEventListener('change', toggleSliders);
@@ -252,9 +286,18 @@ function updateUnifiedUIFromStatus(data) {
     // Bouton Déconnecter Tout
     const disconnectAllBtn = document.getElementById('disconnect-all-btn');
     if (disconnectAllBtn) {
-        const atLeastOneConnected = Boolean((data.follower && data.follower.connected) || (data.leader && data.leader.connected));
+        const atLeastOneConnected = Boolean(
+            (data.follower && data.follower.connected) || 
+            (data.leader && data.leader.connected) ||
+            (data.camera && data.camera.connected)
+        );
         disconnectAllBtn.disabled = !atLeastOneConnected;
         disconnectAllBtn.style.opacity = atLeastOneConnected ? '1' : '0.5';
+    }
+
+    // Caméra Follower
+    if (data.camera) {
+        updateCameraUIFromStatus(data.camera);
     }
 }
 
@@ -2098,4 +2141,216 @@ async function startLeRobotFindPortAssistant() {
         }
     });
 }
+
+// ==========================================================================
+// Module Vision Embarquée (Caméra Follower)
+// ==========================================================================
+
+async function detectCameras() {
+    const select = document.getElementById('camera-index-select');
+    if (!select) return;
+
+    try {
+        const res = await fetch('/api/camera/list');
+        const data = await res.json();
+        if (data.success && Array.isArray(data.cameras) && data.cameras.length > 0) {
+            select.innerHTML = '';
+            data.cameras.forEach(cam => {
+                const opt = document.createElement('option');
+                opt.value = cam.index;
+                opt.textContent = cam.label;
+                if (cam.active) opt.selected = true;
+                select.appendChild(opt);
+            });
+        }
+        if (data.status) {
+            updateCameraUIFromStatus(data.status);
+        }
+    } catch (err) {
+        console.warn('Erreur détection caméras:', err);
+    }
+}
+
+async function toggleCamera() {
+    const toggleBtn = document.getElementById('camera-toggle-btn');
+    const select = document.getElementById('camera-index-select');
+    const streamImg = document.getElementById('camera-stream-img');
+
+    if (cameraState.connected) {
+        // Arrêt
+        if (toggleBtn) toggleBtn.disabled = true;
+        if (streamImg) streamImg.src = ''; // Libérer la connexion HTTP MJPEG immédiatement
+        try {
+            const res = await fetch('/api/camera/disconnect', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                updateCameraUIFromStatus(data.camera);
+                showNotification('Caméra déconnectée', 'info');
+            }
+        } catch (err) {
+            showNotification(`Erreur déconnexion caméra: ${err.message}`, 'error');
+        } finally {
+            if (toggleBtn) toggleBtn.disabled = false;
+        }
+    } else {
+        // Activation
+        const index = select ? parseInt(select.value, 10) || 0 : 0;
+        if (toggleBtn) toggleBtn.disabled = true;
+        try {
+            const res = await fetch('/api/camera/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ index })
+            });
+            const data = await res.json();
+            if (data.success) {
+                updateCameraUIFromStatus(data.camera);
+                showNotification(`Caméra ${index} connectée`, 'success');
+            } else {
+                showNotification(`Échec connexion caméra: ${data.error}`, 'error');
+            }
+        } catch (err) {
+            showNotification(`Erreur connexion caméra: ${err.message}`, 'error');
+        } finally {
+            if (toggleBtn) toggleBtn.disabled = false;
+        }
+    }
+}
+
+async function toggleCameraSetting(settingKey) {
+    if (!cameraState.settings) return;
+
+    const newVal = !cameraState.settings[settingKey];
+    cameraState.settings[settingKey] = newVal;
+
+    // Mise à jour visuelle immédiate du bouton
+    const btnMap = {
+        'show_crosshair': 'camera-crosshair-btn',
+        'rotate_180': 'camera-rotate-btn',
+        'flip_h': 'camera-flip-btn'
+    };
+    const btnId = btnMap[settingKey];
+    if (btnId) {
+        const btn = document.getElementById(btnId);
+        if (btn) btn.classList.toggle('active-tool', newVal);
+    }
+
+    try {
+        const res = await fetch('/api/camera/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [settingKey]: newVal })
+        });
+        const data = await res.json();
+        if (data.success && data.camera) {
+            updateCameraUIFromStatus(data.camera);
+        }
+    } catch (err) {
+        console.warn(`Erreur réglage ${settingKey}:`, err);
+    }
+}
+
+async function takeCameraSnapshot() {
+    const snapBtn = document.getElementById('camera-snapshot-btn');
+    if (!cameraState.connected) return;
+
+    if (snapBtn) snapBtn.disabled = true;
+    try {
+        const res = await fetch('/api/camera/snapshot', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showNotification(`📸 Photo enregistrée : ${data.filename}`, 'success');
+            // Téléchargement automatique
+            const dlLink = document.createElement('a');
+            dlLink.href = data.url;
+            dlLink.download = data.filename;
+            document.body.appendChild(dlLink);
+            dlLink.click();
+            document.body.removeChild(dlLink);
+        } else {
+            showNotification(`Erreur snapshot: ${data.error}`, 'error');
+        }
+    } catch (err) {
+        showNotification(`Erreur snapshot: ${err.message}`, 'error');
+    } finally {
+        if (snapBtn) snapBtn.disabled = !cameraState.connected;
+    }
+}
+
+function updateCameraUIFromStatus(camData) {
+    if (!camData) return;
+
+    cameraState.connected = Boolean(camData.connected);
+    cameraState.index = camData.index !== null && camData.index !== undefined ? camData.index : cameraState.index;
+    cameraState.width = camData.width || 640;
+    cameraState.height = camData.height || 480;
+    cameraState.fps = camData.fps || 0;
+    if (camData.settings) {
+        cameraState.settings = Object.assign({}, cameraState.settings, camData.settings);
+    }
+
+    const badge = document.getElementById('camera-status-badge');
+    const toggleBtn = document.getElementById('camera-toggle-btn');
+    const snapBtn = document.getElementById('camera-snapshot-btn');
+    const placeholder = document.getElementById('camera-placeholder');
+    const streamImg = document.getElementById('camera-stream-img');
+
+    // Badge
+    if (badge) {
+        if (cameraState.connected) {
+            badge.textContent = `En direct • Caméra ${cameraState.index} (${cameraState.width}x${cameraState.height})`;
+            badge.className = 'status-badge connected';
+        } else {
+            badge.textContent = 'Caméra inactive';
+            badge.className = 'status-badge disconnected';
+        }
+    }
+
+    // Bouton Activer / Arrêter
+    if (toggleBtn) {
+        if (cameraState.connected) {
+            toggleBtn.textContent = '⏹ Arrêter Caméra';
+            toggleBtn.className = 'btn btn-danger btn-small';
+        } else {
+            toggleBtn.textContent = '▶ Activer Caméra';
+            toggleBtn.className = 'btn btn-primary btn-small';
+        }
+    }
+
+    // Bouton Snapshot
+    if (snapBtn) {
+        snapBtn.disabled = !cameraState.connected;
+    }
+
+    // Affichage Stream vs Placeholder
+    if (placeholder && streamImg) {
+        if (cameraState.connected) {
+            placeholder.style.display = 'none';
+            streamImg.style.display = 'block';
+            const streamUrl = `/api/camera/stream?t=${Date.now()}`;
+            if (streamImg.getAttribute('src') !== streamUrl && !streamImg.getAttribute('src').startsWith('/api/camera/stream')) {
+                streamImg.src = streamUrl;
+            }
+        } else {
+            placeholder.style.display = 'flex';
+            streamImg.style.display = 'none';
+            streamImg.src = '';
+        }
+    }
+
+    // Outils Toggles
+    const crosshairBtn = document.getElementById('camera-crosshair-btn');
+    if (crosshairBtn) {
+        crosshairBtn.classList.toggle('active-tool', Boolean(cameraState.settings && cameraState.settings.show_crosshair));
+    }
+    const rotateBtn = document.getElementById('camera-rotate-btn');
+    if (rotateBtn) {
+        rotateBtn.classList.toggle('active-tool', Boolean(cameraState.settings && cameraState.settings.rotate_180));
+    }
+    const flipBtn = document.getElementById('camera-flip-btn');
+    if (flipBtn) {
+        flipBtn.classList.toggle('active-tool', Boolean(cameraState.settings && cameraState.settings.flip_h));
+    }
+}
+
 

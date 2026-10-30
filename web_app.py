@@ -4,7 +4,7 @@ Remplace l'interface GUI Tkinter par une interface web moderne
 Support du rechargement à chaud des modules Python
 """
 
-from flask import Flask, render_template, jsonify, request, send_from_directory
+from flask import Flask, render_template, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
 import threading
 import time
@@ -34,6 +34,7 @@ from normalization import normalize_position, denormalize_position, detect_wrap_
 from motor_control import MotorController
 from calibration import CalibrationManager
 from recording import RecordingManager
+from camera import CameraManager
 
 # Dictionnaire pour stocker les modules chargés et leurs chemins
 _loaded_modules = {
@@ -42,6 +43,7 @@ _loaded_modules = {
     'motor_control': sys.modules['motor_control'],
     'calibration': sys.modules['calibration'],
     'recording': sys.modules['recording'],
+    'camera': sys.modules['camera'],
 }
 
 # Chemins des fichiers de modules
@@ -51,6 +53,7 @@ _module_paths = {
     'motor_control': Path('motor_control.py'),
     'calibration': Path('calibration.py'),
     'recording': Path('recording.py'),
+    'camera': Path('camera.py'),
 }
 
 # Timestamps de dernière modification
@@ -160,6 +163,8 @@ def reload_module(module_name):
             globals()['CalibrationManager'] = module.CalibrationManager
         elif module_name == 'recording':
             globals()['RecordingManager'] = module.RecordingManager
+        elif module_name == 'camera':
+            globals()['CameraManager'] = module.CameraManager
         
         log(f"🔄 Module {module_name} rechargé")
         return True
@@ -223,10 +228,27 @@ app_state = {
     'teleop_stop_event': threading.Event(),
     'teleop_last_error': None,
 
+    # Caméra Vision Embarquée
+    'camera_manager': None,
+
     # Logs
     'log_messages': [],
     'log_lock': threading.Lock()
 }
+
+def log(message):
+    """Ajoute un message au log"""
+    with app_state['log_lock']:
+        app_state['log_messages'].append({
+            'time': time.strftime('%H:%M:%S'),
+            'message': message
+        })
+        # Garder seulement les 1000 derniers messages
+        if len(app_state['log_messages']) > 1000:
+            app_state['log_messages'] = app_state['log_messages'][-1000:]
+
+# Initialisation du CameraManager avec logging centralisé
+app_state['camera_manager'] = CameraManager(log_fn=log)
 
 # Proxy de compatibilité pour clone_state
 clone_state = {
@@ -248,17 +270,6 @@ calib_state = {
     'stop_event': threading.Event(),
     'role': None
 }
-
-def log(message):
-    """Ajoute un message au log"""
-    with app_state['log_lock']:
-        app_state['log_messages'].append({
-            'time': time.strftime('%H:%M:%S'),
-            'message': message
-        })
-        # Garder seulement les 1000 derniers messages
-        if len(app_state['log_messages']) > 1000:
-            app_state['log_messages'] = app_state['log_messages'][-1000:]
 
 def _start_position_sender():
     """Démarre le thread d'envoi des positions pour les sliders"""
@@ -643,7 +654,8 @@ def _stop_teleoperation():
 
 @app.route('/api/status')
 def get_status():
-    """Retourne le statut unifié des deux bras et de la téléopération"""
+    """Retourne le statut unifié des deux bras, de la téléopération et de la caméra"""
+    cam_status = app_state['camera_manager'].get_status() if app_state['camera_manager'] else {'connected': False}
     return jsonify({
         'success': True,
         'lerobot_available': LEROBOT_AVAILABLE,
@@ -660,6 +672,7 @@ def get_status():
             'can_start': app_state['is_follower_connected'] and app_state['is_leader_connected'],
             'last_error': app_state['teleop_last_error']
         },
+        'camera': cam_status,
         # Rétrocompatibilité avec les scripts ou appels existants
         'connected': app_state['is_follower_connected'],
         'port': app_state['follower_port'] or app_state['port']
@@ -705,12 +718,14 @@ def arm_disconnect():
 
 @app.route('/api/disconnect-all', methods=['POST'])
 def disconnect_all():
-    """Déconnecte tous les bras (Follower et Leader) et stoppe la téléopération"""
+    """Déconnecte tous les bras (Follower et Leader), stoppe la téléopération et la caméra"""
     if app_state['teleop_running']:
         _stop_teleoperation()
     _disconnect_follower()
     _disconnect_leader()
-    log("🛑 Déconnexion globale effectuée (tous les bras)")
+    if app_state['camera_manager']:
+        app_state['camera_manager'].stop()
+    log("🛑 Déconnexion globale effectuée (tous les bras & caméra)")
     return jsonify({'success': True})
 
 @app.route('/api/teleop/toggle', methods=['POST'])
@@ -724,6 +739,130 @@ def teleop_toggle():
         if not ok:
             return jsonify({'success': False, 'error': err}), 400
         return jsonify({'success': True, 'running': True})
+
+# ==================== ROUTES CAMÉRA (VISION EMBARQUÉE) ====================
+
+@app.route('/api/camera/list')
+def camera_list():
+    """Détecte et liste les caméras disponibles"""
+    cm = app_state['camera_manager']
+    if not cm:
+        return jsonify({'success': False, 'error': 'CameraManager non disponible'}), 500
+    try:
+        cameras = cm.list_cameras()
+        return jsonify({
+            'success': True,
+            'cameras': cameras,
+            'status': cm.get_status()
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/camera/status')
+def camera_status():
+    """Retourne l'état courant de la caméra"""
+    cm = app_state['camera_manager']
+    if not cm:
+        return jsonify({'success': False, 'error': 'CameraManager non disponible'}), 500
+    return jsonify({
+        'success': True,
+        'camera': cm.get_status()
+    })
+
+@app.route('/api/camera/connect', methods=['POST'])
+def camera_connect():
+    """Connecte et active une caméra par son index"""
+    cm = app_state['camera_manager']
+    if not cm:
+        return jsonify({'success': False, 'error': 'CameraManager non disponible'}), 500
+
+    data = request.json or {}
+    try:
+        index = int(data.get('index', 0))
+    except (ValueError, TypeError):
+        index = 0
+
+    ok, err = cm.start(index=index)
+    if not ok:
+        return jsonify({'success': False, 'error': err}), 400
+
+    return jsonify({
+        'success': True,
+        'camera': cm.get_status()
+    })
+
+@app.route('/api/camera/disconnect', methods=['POST'])
+def camera_disconnect():
+    """Déconnecte et libère la caméra"""
+    cm = app_state['camera_manager']
+    if not cm:
+        return jsonify({'success': True})
+    cm.stop()
+    return jsonify({
+        'success': True,
+        'camera': cm.get_status()
+    })
+
+@app.route('/api/camera/settings', methods=['POST'])
+def camera_settings():
+    """Met à jour les paramètres d'orientation et d'affichage"""
+    cm = app_state['camera_manager']
+    if not cm:
+        return jsonify({'success': False, 'error': 'CameraManager non disponible'}), 500
+
+    data = request.json or {}
+    updated_status = cm.update_settings(
+        show_crosshair=data.get('show_crosshair'),
+        rotate_180=data.get('rotate_180'),
+        flip_h=data.get('flip_h')
+    )
+    return jsonify({
+        'success': True,
+        'camera': updated_status
+    })
+
+@app.route('/api/camera/stream')
+def camera_stream():
+    """Flux vidéo MJPEG temps réel pour balise <img src='/api/camera/stream'>"""
+    cm = app_state['camera_manager']
+    if not cm or not cm.is_running:
+        return "Camera not active", 404
+
+    def generate():
+        while cm and cm.is_running:
+            jpeg = cm.get_jpeg_frame()
+            if jpeg:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
+            time.sleep(0.025)
+
+    return Response(
+        generate(),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+@app.route('/api/camera/snapshot', methods=['POST'])
+def camera_snapshot():
+    """Prend une capture instantanée et retourne l'URL du fichier"""
+    cm = app_state['camera_manager']
+    if not cm:
+        return jsonify({'success': False, 'error': 'CameraManager non disponible'}), 500
+
+    ok, filename_or_err, _ = cm.take_snapshot(save_dir="snapshots")
+    if not ok:
+        return jsonify({'success': False, 'error': filename_or_err}), 400
+
+    return jsonify({
+        'success': True,
+        'filename': filename_or_err,
+        'url': f'/snapshots/{filename_or_err}'
+    })
+
+@app.route('/snapshots/<path:filename>')
+def serve_snapshot(filename):
+    """Sert un snapshot pour affichage ou téléchargement"""
+    snapshot_dir = Path("snapshots").resolve()
+    return send_from_directory(str(snapshot_dir), filename, as_attachment=True)
 
 # Rétrocompatibilité : /api/connect
 @app.route('/api/connect', methods=['POST'])
