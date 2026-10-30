@@ -15,18 +15,81 @@ let cloneStatusInterval = null;
 let calibrationTargetRole = 'default';
 let calibrationTargetPort = '';
 
+// État unifié des bras
+let armsState = {
+    follower: { connected: false, port: 'COM5' },
+    leader: { connected: false, port: '' },
+    teleop: { running: false, can_start: false }
+};
+
 // Initialisation
 document.addEventListener('DOMContentLoaded', () => {
     initializeUI();
     fetchInitialStatus();
+    refreshAllPorts();
     updatePollingState();
 });
 
 function initializeUI() {
-    // Connexion
-    document.getElementById('connect-btn').addEventListener('click', toggleConnection);
+    // Connexion Follower
+    const followerConnectBtn = document.getElementById('follower-connect-btn');
+    if (followerConnectBtn) followerConnectBtn.addEventListener('click', () => toggleArmConnection('follower'));
+
+    const followerCalibBtn = document.getElementById('follower-calib-btn');
+    if (followerCalibBtn) followerCalibBtn.addEventListener('click', () => openCalibrationModalForRole('follower'));
+
+    // Connexion Leader
+    const leaderConnectBtn = document.getElementById('leader-connect-btn');
+    if (leaderConnectBtn) leaderConnectBtn.addEventListener('click', () => toggleArmConnection('leader'));
+
+    const leaderCalibBtn = document.getElementById('leader-calib-btn');
+    if (leaderCalibBtn) leaderCalibBtn.addEventListener('click', () => openCalibrationModalForRole('leader'));
+
+    // Outils de détection ports & Déconnexion globale
+    const refreshPortsBtn = document.getElementById('refresh-all-ports-btn');
+    if (refreshPortsBtn) refreshPortsBtn.addEventListener('click', refreshAllPorts);
+
+    const lerobotFindBtn = document.getElementById('find-port-lerobot-btn');
+    if (lerobotFindBtn) lerobotFindBtn.addEventListener('click', startLeRobotFindPortAssistant);
+
+    const disconnectAllBtn = document.getElementById('disconnect-all-btn');
+    if (disconnectAllBtn) disconnectAllBtn.addEventListener('click', disconnectAll);
+
+    // Téléopération
+    const teleopToggleBtn = document.getElementById('teleop-toggle-btn');
+    if (teleopToggleBtn) teleopToggleBtn.addEventListener('click', toggleTeleop);
+
+    // Sélecteurs de ports & inputs
+    const fSelect = document.getElementById('follower-port-select');
+    const fInput = document.getElementById('follower-port-input');
+    if (fSelect && fInput) {
+        fSelect.addEventListener('change', () => {
+            if (fSelect.value) fInput.value = fSelect.value;
+        });
+        fInput.addEventListener('input', () => {
+            fSelect.value = fInput.value;
+        });
+    }
+
+    const lSelect = document.getElementById('leader-port-select');
+    const lInput = document.getElementById('leader-port-input');
+    if (lSelect && lInput) {
+        lSelect.addEventListener('change', () => {
+            if (lSelect.value) {
+                lInput.value = lSelect.value;
+                if (leaderConnectBtn) leaderConnectBtn.disabled = false;
+                if (leaderCalibBtn) leaderCalibBtn.disabled = false;
+            }
+        });
+        lInput.addEventListener('input', () => {
+            lSelect.value = lInput.value;
+            const hasVal = lInput.value.trim().length > 0;
+            if (leaderConnectBtn) leaderConnectBtn.disabled = !hasVal && !armsState.leader.connected;
+            if (leaderCalibBtn) leaderCalibBtn.disabled = !hasVal;
+        });
+    }
     
-    // Contrôle
+    // Contrôle Follower (lecture, torque, home)
     document.getElementById('read-positions-btn').addEventListener('click', readPositions);
     document.getElementById('release-btn').addEventListener('click', releaseMotors);
     document.getElementById('lock-btn').addEventListener('click', lockMotors);
@@ -48,15 +111,10 @@ function initializeUI() {
     // Outils
     document.getElementById('setup-motors-btn').addEventListener('click', setupMotors);
     document.getElementById('calibrate-btn').addEventListener('click', openCalibrationModal);
-    document.getElementById('find-port-btn').addEventListener('click', findPort);
+    const findPortBtn = document.getElementById('find-port-btn');
+    if (findPortBtn) findPortBtn.addEventListener('click', findPort);
 
-    // Clonage
-    document.getElementById('clone-refresh-ports-btn').addEventListener('click', refreshClonePorts);
-    document.getElementById('clone-calibrate-leader-btn').addEventListener('click', () => openCalibrationModalForRole('leader'));
-    document.getElementById('clone-calibrate-follower-btn').addEventListener('click', () => openCalibrationModalForRole('follower'));
-    document.getElementById('clone-toggle-btn').addEventListener('click', toggleClone);
-    
-    // Modal
+    // Modal Calibration
     const modal = document.getElementById('calibration-modal');
     const closeBtn = modal.querySelector('.close');
     closeBtn.addEventListener('click', () => {
@@ -87,11 +145,12 @@ function initializeUI() {
     
     // Calibration
     document.getElementById('start-auto-calib-btn').addEventListener('click', startAutoCalibration);
+    const stopAutoCalibBtn = document.getElementById('stop-auto-calib-btn');
+    if (stopAutoCalibBtn) stopAutoCalibBtn.addEventListener('click', stopAutoCalibration);
     document.getElementById('release-all-btn').addEventListener('click', releaseAllMotors);
     document.getElementById('lock-all-btn').addEventListener('click', lockAllMotors);
     
     setupManualCalibration();
-    refreshClonePorts();
 }
 
 async function fetchInitialStatus() {
@@ -99,14 +158,230 @@ async function fetchInitialStatus() {
         const res = await fetch('/api/status');
         const data = await res.json();
         if (data.success) {
-            appState.is_connected = data.connected;
-            appState.port = data.port;
-            updateConnectionStatus(data.connected);
+            updateUnifiedUIFromStatus(data);
         }
     } catch (err) {
-        // Ignorer silencieusement
+        console.warn('Status error:', err);
     } finally {
         updatePollingState();
+    }
+}
+
+function updateUnifiedUIFromStatus(data) {
+    if (data.follower) {
+        armsState.follower = data.follower;
+        appState.is_connected = data.follower.connected;
+        appState.port = data.follower.port;
+        
+        const fBadge = document.getElementById('follower-status-badge');
+        const fBtn = document.getElementById('follower-connect-btn');
+        const fCard = document.querySelector('.follower-card');
+        
+        if (data.follower.connected) {
+            if (fBadge) {
+                fBadge.textContent = `Connecté (${data.follower.port})`;
+                fBadge.className = 'status-badge connected';
+            }
+            if (fBtn) fBtn.textContent = 'Déconnecter';
+            if (fCard) fCard.classList.add('connected-arm');
+        } else {
+            if (fBadge) {
+                fBadge.textContent = 'Déconnecté';
+                fBadge.className = 'status-badge disconnected';
+            }
+            if (fBtn) fBtn.textContent = 'Connecter Follower';
+            if (fCard) fCard.classList.remove('connected-arm');
+        }
+    }
+
+    if (data.leader) {
+        armsState.leader = data.leader;
+        const lBadge = document.getElementById('leader-status-badge');
+        const lBtn = document.getElementById('leader-connect-btn');
+        const lCard = document.querySelector('.leader-card');
+        
+        if (data.leader.connected) {
+            if (lBadge) {
+                lBadge.textContent = `Connecté (${data.leader.port})`;
+                lBadge.className = 'status-badge connected';
+            }
+            if (lBtn) {
+                lBtn.textContent = 'Déconnecter';
+                lBtn.disabled = false;
+            }
+            if (lCard) lCard.classList.add('connected-arm');
+        } else {
+            if (lBadge) {
+                lBadge.textContent = 'Non connecté';
+                lBadge.className = 'status-badge disconnected';
+            }
+            if (lBtn) lBtn.textContent = 'Connecter Leader';
+            if (lCard) lCard.classList.remove('connected-arm');
+        }
+    }
+
+    // Téléopération
+    const teleopBtn = document.getElementById('teleop-toggle-btn');
+    const teleopBanner = document.querySelector('.teleop-banner');
+    const teleopHint = document.getElementById('teleop-hint');
+    const isRunning = data.teleop && data.teleop.running;
+    const canStart = data.teleop && data.teleop.can_start;
+    cloneRunning = isRunning;
+
+    if (teleopBtn) {
+        teleopBtn.disabled = !canStart && !isRunning;
+        if (isRunning) {
+            teleopBtn.textContent = '⏹ Arrêter le Clonage';
+            teleopBtn.className = 'btn btn-danger';
+            if (teleopBanner) teleopBanner.className = 'teleop-banner active';
+            if (teleopHint) teleopHint.textContent = '🟢 Clonage actif : bougez le bras Leader, le Follower réplique en direct !';
+        } else {
+            teleopBtn.textContent = '▶ Démarrer le Clonage';
+            teleopBtn.className = 'btn btn-success';
+            if (teleopBanner) teleopBanner.className = canStart ? 'teleop-banner ready' : 'teleop-banner';
+            if (teleopHint) {
+                if (canStart) {
+                    teleopHint.textContent = '✨ Les 2 bras sont connectés ! Vous pouvez démarrer la téléopération.';
+                } else {
+                    teleopHint.textContent = 'Branchez et connectez le Leader et le Follower pour activer le clonage en direct.';
+                }
+            }
+        }
+    }
+
+    // Bouton Déconnecter Tout
+    const disconnectAllBtn = document.getElementById('disconnect-all-btn');
+    if (disconnectAllBtn) {
+        const atLeastOneConnected = Boolean((data.follower && data.follower.connected) || (data.leader && data.leader.connected));
+        disconnectAllBtn.disabled = !atLeastOneConnected;
+        disconnectAllBtn.style.opacity = atLeastOneConnected ? '1' : '0.5';
+    }
+}
+
+async function toggleArmConnection(role) {
+    const isConnected = role === 'follower' ? armsState.follower.connected : armsState.leader.connected;
+    const portInput = document.getElementById(`${role}-port-input`);
+    const port = portInput ? portInput.value.trim() : '';
+
+    if (!isConnected) {
+        if (!port) {
+            alert(`Veuillez renseigner ou sélectionner un port pour le bras ${role}.`);
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/arm/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: role, port: port })
+            });
+            const data = await res.json();
+            if (data.success) {
+                showNotification(`Bras ${role} connecté sur ${port}`, 'success');
+                await fetchInitialStatus();
+            } else {
+                alert(`Erreur connexion ${role}: ` + data.error);
+            }
+        } catch (e) {
+            alert(`Erreur réseau: ` + e.message);
+        }
+    } else {
+        try {
+            const res = await fetch('/api/arm/disconnect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: role })
+            });
+            const data = await res.json();
+            if (data.success) {
+                showNotification(`Bras ${role} déconnecté`, 'info');
+                await fetchInitialStatus();
+            }
+        } catch (e) {
+            alert(`Erreur réseau: ` + e.message);
+        }
+    }
+}
+
+async function disconnectAll() {
+    try {
+        const res = await fetch('/api/disconnect-all', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showNotification('Tous les bras ont été déconnectés', 'info');
+            await fetchInitialStatus();
+        } else {
+            alert('Erreur: ' + (data.error || 'Impossible de tout déconnecter'));
+        }
+    } catch (e) {
+        alert('Erreur réseau: ' + e.message);
+    }
+}
+
+async function toggleTeleop() {
+    try {
+        const res = await fetch('/api/teleop/toggle', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showNotification(data.running ? 'Clonage démarré !' : 'Clonage arrêté.', data.running ? 'success' : 'info');
+            await fetchInitialStatus();
+        } else {
+            alert('Erreur téléopération: ' + data.error);
+        }
+    } catch (e) {
+        alert('Erreur réseau: ' + e.message);
+    }
+}
+
+async function refreshAllPorts() {
+    try {
+        const res = await fetch('/api/find-port');
+        const data = await res.json();
+        const fSelect = document.getElementById('follower-port-select');
+        const lSelect = document.getElementById('leader-port-select');
+        const summary = document.getElementById('detected-ports-summary');
+
+        if (!data.success || !data.ports || data.ports.length === 0) {
+            if (summary) summary.innerHTML = '⚠️ Aucun port série USB détecté. Vérifiez vos câbles.';
+            return;
+        }
+
+        const ports = data.ports;
+        let summaryText = `🔍 <strong>${ports.length} port(s) détecté(s) :</strong> `;
+        summaryText += ports.map(p => `<span style="color:#48bb78;font-weight:bold;">${p.device}</span> (${p.description || p.manufacturer || 'Série'})`).join(' • ');
+        if (summary) summary.innerHTML = summaryText;
+
+        const populateSelect = (select, currentVal, defaultLabel) => {
+            if (!select) return;
+            select.innerHTML = `<option value="">${defaultLabel}</option>`;
+            ports.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.device;
+                opt.textContent = `${p.device} — ${p.description || p.manufacturer || 'USB'}`;
+                if (p.device === currentVal) opt.selected = true;
+                select.appendChild(opt);
+            });
+        };
+
+        const fInput = document.getElementById('follower-port-input');
+        const lInput = document.getElementById('leader-port-input');
+
+        if (fInput && (!fInput.value || fInput.value === 'COM3')) {
+            fInput.value = ports[0].device;
+        }
+
+        populateSelect(fSelect, fInput ? fInput.value : '', '-- Sélectionner un port --');
+        populateSelect(lSelect, lInput ? lInput.value : '', '-- Non branché / Optionnel --');
+
+        if (ports.length >= 2 && lInput && !lInput.value) {
+            const secondPort = ports.find(p => p.device !== (fInput ? fInput.value : '')) || ports[1];
+            lInput.value = secondPort.device;
+            if (lSelect) lSelect.value = secondPort.device;
+            const lBtn = document.getElementById('leader-connect-btn');
+            if (lBtn) lBtn.disabled = false;
+        }
+    } catch (e) {
+        console.warn('Erreur détection ports:', e);
     }
 }
 
@@ -989,17 +1264,20 @@ function openCalibrationModal() {
     document.getElementById('calibration-modal').style.display = 'block';
     calibrationModalOpen = true;
     refreshCalibration();
+    loadManualCalibrationValues();
     setupAutoCalibrationCheckboxes();
     updatePollingState();
 }
 
 function openCalibrationModalForRole(role) {
-    const leaderPort = document.getElementById('clone-leader-port').value;
-    const followerPort = document.getElementById('clone-follower-port').value;
+    const leaderInput = document.getElementById('leader-port-input');
+    const followerInput = document.getElementById('follower-port-input');
+    const leaderPort = leaderInput ? leaderInput.value.trim() : '';
+    const followerPort = followerInput ? followerInput.value.trim() : '';
     const port = role === 'leader' ? leaderPort : followerPort;
 
     if (!port) {
-        alert(`Sélectionnez d'abord le port ${role}.`);
+        alert(`Veuillez renseigner un port pour le bras ${role}.`);
         return;
     }
 
@@ -1008,6 +1286,7 @@ function openCalibrationModalForRole(role) {
     document.getElementById('calibration-modal').style.display = 'block';
     calibrationModalOpen = true;
     refreshCalibration();
+    loadManualCalibrationValues();
     setupAutoCalibrationCheckboxes();
     updatePollingState();
 }
@@ -1023,6 +1302,10 @@ function switchTab(tabName) {
     document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
     document.getElementById(`${tabName}-tab`).classList.add('active');
     activeCalibrationTab = tabName;
+    if (tabName === 'manual') {
+        loadManualCalibrationValues();
+        updateManualPositions();
+    }
     updatePollingState();
 }
 
@@ -1054,22 +1337,36 @@ async function startAutoCalibration() {
         return;
     }
     
+    const startBtn = document.getElementById('start-auto-calib-btn');
+    const stopBtn = document.getElementById('stop-auto-calib-btn');
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = false;
+
     const logDiv = document.getElementById('auto-calib-log');
     logDiv.innerHTML = '<div>Démarrage de la calibration...</div>';
     
     try {
+        let res;
         if (calibrationTargetRole === 'default') {
-            await fetch('/api/calibration/auto', {
+            res = await fetch('/api/calibration/auto', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ motors: motors })
             });
         } else {
-            await fetch('/api/clone/calibration/auto', {
+            res = await fetch('/api/clone/calibration/auto', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ role: calibrationTargetRole, port: calibrationTargetPort, motors: motors })
             });
+        }
+
+        const data = await res.json();
+        if (!data.success) {
+            alert('Erreur: ' + data.error);
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
+            return;
         }
         
         // Mettre à jour les logs périodiquement
@@ -1082,12 +1379,47 @@ async function startAutoCalibration() {
                     `<div>[${log.time}] ${log.message}</div>`
                 ).join('');
                 logDiv.scrollTop = logDiv.scrollHeight;
+
+                const lastLog = recentLogs[recentLogs.length - 1];
+                if (lastLog && (lastLog.message.includes('terminée') || lastLog.message.includes('interrompue') || lastLog.message.includes('Arrêt d\'urgence'))) {
+                    clearInterval(logInterval);
+                    if (startBtn) startBtn.disabled = false;
+                    if (stopBtn) stopBtn.disabled = true;
+                }
             }
-        }, 1000);
+        }, 800);
         
-        setTimeout(() => clearInterval(logInterval), 60000);
+        setTimeout(() => {
+            clearInterval(logInterval);
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
+        }, 90000);
     } catch (err) {
         alert('Erreur: ' + err.message);
+        if (startBtn) startBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+    }
+}
+
+async function stopAutoCalibration() {
+    const stopBtn = document.getElementById('stop-auto-calib-btn');
+    const startBtn = document.getElementById('start-auto-calib-btn');
+    if (stopBtn) stopBtn.textContent = '⏳ Arrêt en cours...';
+
+    try {
+        const res = await fetch('/api/calibration/stop', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showNotification('Arrêt de la calibration demandé (couple relâché)', 'warning');
+        }
+    } catch (e) {
+        alert('Erreur arrêt calibration: ' + e.message);
+    } finally {
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.textContent = '⏹ Arrêter la Calibration';
+        }
+        if (startBtn) startBtn.disabled = false;
     }
 }
 
@@ -1209,13 +1541,18 @@ async function updateManualPositions() {
         }
         const data = await res.json();
         
-        if (data.success) {
+        if (data.success && data.positions) {
             MOTOR_NAMES.forEach(name => {
-                document.getElementById(`manual-pos-${name}`).textContent = data.positions[name].raw;
+                const el = document.getElementById(`manual-pos-${name}`);
+                if (el && data.positions[name]) {
+                    el.textContent = data.positions[name].raw;
+                }
             });
+        } else if (!data.success) {
+            console.warn('Erreur lecture positions manuelles:', data.error);
         }
     } catch (err) {
-        // Ignorer les erreurs silencieusement
+        console.error('Erreur lecture positions manuelles:', err);
     }
 }
 
@@ -1518,9 +1855,7 @@ function startStatusUpdates() {
             
             if (data.success) {
                 const wasConnected = appState.is_connected;
-                appState.is_connected = data.connected;
-                appState.port = data.port;
-                updateConnectionStatus(data.connected);
+                updateUnifiedUIFromStatus(data);
                 if (wasConnected !== appState.is_connected) {
                     updatePollingState();
                 }
@@ -1650,5 +1985,117 @@ function stopLogUpdates() {
         clearInterval(logUpdateInterval);
         logUpdateInterval = null;
     }
+}
+
+async function startLeRobotFindPortAssistant() {
+    let modal = document.getElementById('lerobot-port-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'lerobot-port-modal';
+        modal.className = 'modal';
+        document.body.appendChild(modal);
+    }
+
+    let initialPorts = [];
+    try {
+        const res = await fetch('/api/find-port');
+        const data = await res.json();
+        initialPorts = (data.success && data.ports) ? data.ports.map(p => p.device) : [];
+    } catch (e) {
+        console.error(e);
+    }
+
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 600px; text-align: left;">
+            <span class="close-lerobot-modal" style="float: right; font-size: 28px; cursor: pointer;">&times;</span>
+            <h2>🔌 Assistant LeRobot — Trouver le Port</h2>
+            <p style="margin-top: 10px; color: var(--text-secondary);">
+                Cette méthode (identique à <code>lerobot-find-port</code>) identifie avec certitude le port de votre bras robotique en comparant les ports avant et après débranchement.
+            </p>
+            <div id="lerobot-step-content" style="margin: 20px 0; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                <p><strong>Étape 1 sur 2 :</strong></p>
+                <p>Ports actuellement branchés : <strong>${initialPorts.length > 0 ? initialPorts.join(', ') : 'Aucun'}</strong></p>
+                <div style="margin: 15px 0; padding: 10px; background: rgba(237, 137, 54, 0.15); border-left: 4px solid #ed8936; border-radius: 4px;">
+                    👉 <strong>Débranchez le câble USB</strong> de votre robot SO-101 de votre ordinateur.
+                </div>
+                <button id="lerobot-step1-btn" class="btn btn-warning" style="width: 100%;">J'ai débranché le câble USB ➜</button>
+            </div>
+        </div>
+    `;
+    modal.style.display = 'block';
+
+    modal.querySelector('.close-lerobot-modal').addEventListener('click', () => {
+        modal.style.display = 'none';
+    });
+
+    document.getElementById('lerobot-step1-btn').addEventListener('click', async () => {
+        const stepContainer = document.getElementById('lerobot-step-content');
+        stepContainer.innerHTML = '<p>🔍 Analyse des ports en cours...</p>';
+
+        await new Promise(r => setTimeout(r, 600));
+
+        try {
+            const res = await fetch('/api/find-port');
+            const data = await res.json();
+            const currentPorts = (data.success && data.ports) ? data.ports.map(p => p.device) : [];
+
+            // Trouver la différence (les ports qui étaient là avant et ont disparu)
+            const diff = initialPorts.filter(p => !currentPorts.includes(p));
+
+            if (diff.length === 1) {
+                const detectedPort = diff[0];
+                stepContainer.innerHTML = `
+                    <div style="padding: 15px; background: rgba(72, 187, 120, 0.15); border-left: 4px solid #48bb78; border-radius: 4px; margin-bottom: 15px;">
+                        <h3 style="color: #48bb78; margin-top: 0;">🎉 Port trouvé : <strong>${detectedPort}</strong> !</h3>
+                        <p>Le port associé à votre robot est bien <strong>${detectedPort}</strong>.</p>
+                    </div>
+                    <div style="margin: 15px 0; padding: 10px; background: rgba(66, 153, 225, 0.15); border-left: 4px solid #4299e1; border-radius: 4px;">
+                        👉 <strong>Rebranchez maintenant le câble USB</strong> sur votre ordinateur.
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button id="lerobot-apply-follower-btn" class="btn btn-primary" style="flex: 1;">🦾 Assigner au Follower</button>
+                        <button id="lerobot-apply-leader-btn" class="btn btn-warning" style="flex: 1;">🎮 Assigner au Leader</button>
+                    </div>
+                `;
+
+                document.getElementById('lerobot-apply-follower-btn').addEventListener('click', () => {
+                    const fInput = document.getElementById('follower-port-input');
+                    const fSelect = document.getElementById('follower-port-select');
+                    if (fInput) fInput.value = detectedPort;
+                    if (fSelect) fSelect.value = detectedPort;
+                    modal.style.display = 'none';
+                    showNotification(`Port Follower configuré sur ${detectedPort}`, 'success');
+                    refreshAllPorts();
+                });
+
+                document.getElementById('lerobot-apply-leader-btn').addEventListener('click', () => {
+                    const lInput = document.getElementById('leader-port-input');
+                    const lSelect = document.getElementById('leader-port-select');
+                    if (lInput) lInput.value = detectedPort;
+                    if (lSelect) lSelect.value = detectedPort;
+                    const lBtn = document.getElementById('leader-connect-btn');
+                    if (lBtn) lBtn.disabled = false;
+                    modal.style.display = 'none';
+                    showNotification(`Port Leader configuré sur ${detectedPort}`, 'success');
+                    refreshAllPorts();
+                });
+            } else if (diff.length === 0) {
+                stepContainer.innerHTML = `
+                    <p style="color: #f56565;">⚠️ Aucun port n'a disparu (${currentPorts.join(', ') || 'aucun'}).</p>
+                    <p>Avez-vous bien retiré le câble USB du robot ?</p>
+                    <button id="lerobot-retry-btn" class="btn btn-secondary" style="width: 100%;">Recommencer l'assistant</button>
+                `;
+                document.getElementById('lerobot-retry-btn').addEventListener('click', startLeRobotFindPortAssistant);
+            } else {
+                stepContainer.innerHTML = `
+                    <p style="color: #ed8936;">Plusieurs périphériques ont été débranchés simultanément (${diff.join(', ')}).</p>
+                    <button id="lerobot-retry-btn" class="btn btn-secondary" style="width: 100%;">Recommencer</button>
+                `;
+                document.getElementById('lerobot-retry-btn').addEventListener('click', startLeRobotFindPortAssistant);
+            }
+        } catch (err) {
+            stepContainer.innerHTML = `<p style="color: #f56565;">Erreur: ${err.message}</p>`;
+        }
+    });
 }
 

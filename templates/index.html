@@ -13,19 +13,86 @@
             <p class="subtitle">Contrôleur Web pour Bras Robotique</p>
         </header>
 
-        <!-- Section Connexion -->
+        <!-- Section Unifiée : Bras Robotiques (Follower & Leader) -->
         <section class="card">
-            <h2>🔌 Connexion</h2>
-            <div class="connection-panel">
-                <div class="input-group">
-                    <label for="port-input">Port:</label>
-                    <input type="text" id="port-input" value="COM3" placeholder="COM3">
-                    <button id="connect-btn" class="btn btn-primary">Connecter</button>
-                </div>
-                <div class="status-indicator">
-                    <span id="status-text" class="status-disconnected">Déconnecté</span>
+            <div class="card-header-flex">
+                <h2>🦾 Bras & Téléopération (Follower / Leader)</h2>
+                <div class="card-header-actions">
+                    <button id="refresh-all-ports-btn" class="btn btn-secondary btn-small" title="Actualiser la liste des ports connectés">↻ Détecter les ports</button>
+                    <button id="find-port-lerobot-btn" class="btn btn-secondary btn-small" title="Assistant LeRobot pour identifier le bon port">🔌 Assistant LeRobot</button>
+                    <button id="disconnect-all-btn" class="btn btn-danger btn-small" title="Déconnecter immédiatement tous les bras">🛑 Tout Déconnecter</button>
                 </div>
             </div>
+
+            <div class="arms-grid">
+                <!-- Carte Bras Follower (Principal) -->
+                <div class="arm-card follower-card">
+                    <div class="arm-card-header">
+                        <span class="arm-badge follower">Arm 1 • Follower</span>
+                        <span class="arm-subtitle">Bras Principal (Requis)</span>
+                    </div>
+                    <p class="arm-desc">Exécute les mouvements, réagit aux sliders et enregistre/rejoue les trajectoires.</p>
+                    
+                    <div class="port-selection-box">
+                        <label for="follower-port-select">Port COM :</label>
+                        <div class="port-input-combo">
+                            <select id="follower-port-select" class="port-select">
+                                <option value="">-- Sélectionner un port --</option>
+                            </select>
+                            <input type="text" id="follower-port-input" value="COM5" placeholder="COM5" class="port-text-input">
+                        </div>
+                    </div>
+
+                    <div class="arm-actions">
+                        <button id="follower-connect-btn" class="btn btn-primary">Connecter Follower</button>
+                        <button id="follower-calib-btn" class="btn btn-secondary btn-small">📐 Calibrer</button>
+                    </div>
+
+                    <div class="arm-status-bar">
+                        <span id="follower-status-badge" class="status-badge disconnected">Déconnecté</span>
+                    </div>
+                </div>
+
+                <!-- Carte Bras Leader (Téléopération) -->
+                <div class="arm-card leader-card">
+                    <div class="arm-card-header">
+                        <span class="arm-badge leader">Arm 2 • Leader</span>
+                        <span class="arm-subtitle">Téléopération (Optionnel)</span>
+                    </div>
+                    <p class="arm-desc">Bras de guidage libre à la main. Ses mouvements sont répliqués en direct sur le Follower.</p>
+                    
+                    <div class="port-selection-box">
+                        <label for="leader-port-select">Port COM :</label>
+                        <div class="port-input-combo">
+                            <select id="leader-port-select" class="port-select">
+                                <option value="">-- Non branché / Optionnel --</option>
+                            </select>
+                            <input type="text" id="leader-port-input" value="" placeholder="ex: COM4" class="port-text-input">
+                        </div>
+                    </div>
+
+                    <div class="arm-actions">
+                        <button id="leader-connect-btn" class="btn btn-primary">Connecter Leader</button>
+                        <button id="leader-calib-btn" class="btn btn-secondary btn-small">📐 Calibrer</button>
+                    </div>
+
+                    <div class="arm-status-bar">
+                        <span id="leader-status-badge" class="status-badge disconnected">Non connecté</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Barre de contrôle Téléopération / Clonage -->
+            <div class="teleop-banner">
+                <div class="teleop-info">
+                    <span class="teleop-title">🧬 Clonage en direct (Leader ➜ Follower)</span>
+                    <span id="teleop-hint" class="teleop-hint">Branchez et connectez le Leader et le Follower pour activer la téléopération.</span>
+                </div>
+                <div class="teleop-actions">
+                    <button id="teleop-toggle-btn" class="btn btn-success" disabled>▶ Démarrer la Téléopération</button>
+                </div>
+            </div>
+            <div id="detected-ports-summary" style="margin-top: 12px; font-size: 0.9em; color: var(--text-secondary);"></div>
         </section>
 
         <!-- Section Contrôle -->
@@ -84,34 +151,6 @@
             </div>
         </section>
 
-        <!-- Section Clonage -->
-        <section class="card">
-            <h2>🧬 Clonage (Leader → Follower)</h2>
-            <div class="clone-panel">
-                <div class="input-group">
-                    <label for="clone-leader-port">Port Leader:</label>
-                    <select id="clone-leader-port">
-                        <option value="">-- Sélectionner --</option>
-                    </select>
-                    <button id="clone-refresh-ports-btn" class="btn btn-small">↻ Ports</button>
-                </div>
-                <div class="input-group">
-                    <label for="clone-follower-port">Port Follower:</label>
-                    <select id="clone-follower-port">
-                        <option value="">-- Sélectionner --</option>
-                    </select>
-                </div>
-                <div class="clone-buttons">
-                    <button id="clone-calibrate-leader-btn" class="btn btn-secondary">📐 Calibrer Leader</button>
-                    <button id="clone-calibrate-follower-btn" class="btn btn-secondary">📐 Calibrer Follower</button>
-                    <button id="clone-toggle-btn" class="btn btn-primary">▶ Démarrer le clonage</button>
-                </div>
-                <div class="clone-status">
-                    <span id="clone-status-text">Clonage arrêté</span>
-                </div>
-            </div>
-        </section>
-
         <!-- Section Outils -->
         <section class="card">
             <h2>🔧 Outils</h2>
@@ -139,7 +178,10 @@
                         <h3>Moteurs à calibrer:</h3>
                         <div id="motor-checkboxes"></div>
                     </div>
-                    <button id="start-auto-calib-btn" class="btn btn-primary">▶ Démarrer la Calibration</button>
+                    <div style="display: flex; gap: 10px; margin: 15px 0;">
+                        <button id="start-auto-calib-btn" class="btn btn-primary" style="flex: 1;">▶ Démarrer la Calibration</button>
+                        <button id="stop-auto-calib-btn" class="btn btn-danger" style="flex: 1;" disabled>⏹ Arrêter la Calibration</button>
+                    </div>
                     <div id="auto-calib-log" class="calib-log"></div>
                 </div>
                 

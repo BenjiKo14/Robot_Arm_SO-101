@@ -203,6 +203,218 @@ header h1 {
     font-size: 1.1em;
 }
 
+/* Grille Unifiée des Bras Robotiques */
+.card-header-flex {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid var(--primary-color);
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.card-header-flex h2 {
+    border-bottom: none !important;
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+.card-header-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.arms-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.arm-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    transition: all 0.3s ease;
+}
+
+.arm-card.follower-card {
+    border-left: 4px solid var(--primary-color);
+}
+
+.arm-card.leader-card {
+    border-left: 4px solid #ed8936;
+}
+
+.arm-card.connected-arm {
+    background: rgba(72, 187, 120, 0.06);
+    border-color: rgba(72, 187, 120, 0.4);
+}
+
+.arm-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.arm-badge {
+    background: var(--primary-color);
+    color: white;
+    font-size: 0.75em;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+}
+
+.arm-badge.leader {
+    background: #ed8936;
+}
+
+.arm-subtitle {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+}
+
+.arm-desc {
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.4;
+}
+
+.port-selection-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 5px;
+}
+
+.port-selection-box label {
+    font-weight: 600;
+    font-size: 0.9em;
+}
+
+.port-input-combo {
+    display: flex;
+    gap: 8px;
+}
+
+.port-input-combo select {
+    flex: 1;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    font-size: 0.95em;
+}
+
+.port-input-combo select option {
+    color: #111;
+    background: #fff;
+}
+
+.port-input-combo input {
+    width: 80px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    font-size: 0.95em;
+    text-align: center;
+}
+
+.arm-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 6px;
+}
+
+.arm-actions .btn {
+    flex: 1;
+}
+
+.arm-actions .btn-small {
+    flex: 0 0 auto;
+}
+
+.arm-status-bar {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 4px;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+.status-badge.disconnected {
+    background: rgba(245, 101, 101, 0.2);
+    color: #fc8181;
+    border: 1px solid rgba(245, 101, 101, 0.4);
+}
+
+.status-badge.connected {
+    background: rgba(72, 187, 120, 0.2);
+    color: #68d391;
+    border: 1px solid rgba(72, 187, 120, 0.4);
+}
+
+/* Bannière Téléopération */
+.teleop-banner {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-top: 10px;
+}
+
+.teleop-banner.ready {
+    border-color: rgba(72, 187, 120, 0.5);
+    background: rgba(72, 187, 120, 0.08);
+}
+
+.teleop-banner.active {
+    border-color: #ed8936;
+    background: rgba(237, 137, 54, 0.12);
+    box-shadow: 0 0 15px rgba(237, 137, 54, 0.2);
+}
+
+.teleop-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.teleop-title {
+    font-weight: 700;
+    font-size: 1.05em;
+    color: var(--text-primary);
+}
+
+.teleop-hint {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+}
+
 /* Contrôle */
 .control-buttons {
     display: flex;
@@ -471,7 +683,8 @@ header h1 {
 }
 
 .close:hover,
-.close-port-modal:hover {
+.close-port-modal:hover,
+.close-lerobot-modal:hover {
     color: var(--text-primary);
 }
 

@@ -255,48 +255,88 @@ class CalibrationManager:
             self.log(traceback.format_exc())
             return False
     
-    def calibrate_motor_auto(self, motor_name, motor_id, log_callback):
-        """Calibre un moteur automatiquement en trouvant MIN et MAX"""
+    def calibrate_motor_auto(self, motor_name, motor_id, log_callback, stop_event=None):
+        """Calibre un moteur automatiquement en trouvant MIN et MAX (interrompable)"""
+        def _check_stopped():
+            return stop_event is not None and stop_event.is_set()
+
+        def _sleep_interruptible(duration):
+            t_end = time.time() + duration
+            while time.time() < t_end:
+                if _check_stopped():
+                    return False
+                time.sleep(0.05)
+            return True
+
+        def _abort():
+            log_callback(f"  🛑 Calibration interrompue pour {motor_name}.")
+            try:
+                self.motors.write("Torque_Enable", motor_name, False, normalize=False)
+            except Exception:
+                pass
+            return False
+
+        if _check_stopped():
+            return _abort()
+
         log_callback(f"\n🔧 Calibration de {motor_name} (ID {motor_id})...")
         
         try:
             # 1. Activer le torque
             log_callback(f"  → Activation du torque...")
             self.motors.write("Torque_Enable", motor_name, True, normalize=False)
-            time.sleep(0.1)
+            if not _sleep_interruptible(0.1):
+                return _abort()
             
             # 2. Position actuelle
             present_pos = self.motors.read("Present_Position", motor_name, normalize=False)
             log_callback(f"  Position actuelle: {present_pos}")
             
+            if _check_stopped():
+                return _abort()
+
             # 3. Trouver MIN
             log_callback(f"  → Recherche MIN...")
             self.motors.write("Goal_Position", motor_name, 0, normalize=False)
-            time.sleep(1.0)
+            if not _sleep_interruptible(1.0):
+                return _abort()
             
             positions_history = []
             for _ in range(10):
+                if _check_stopped():
+                    return _abort()
                 pos = self.motors.read("Present_Position", motor_name, normalize=False)
                 positions_history.append(pos)
-                time.sleep(0.1)
+                if not _sleep_interruptible(0.1):
+                    return _abort()
             
             calib_min = int(sum(positions_history[-5:]) / 5)
             log_callback(f"  ✓ MIN détecté: {calib_min}")
             
+            if _check_stopped():
+                return _abort()
+
             # 4. Trouver MAX
             log_callback(f"  → Recherche MAX...")
             self.motors.write("Goal_Position", motor_name, 4095, normalize=False)
-            time.sleep(1.0)
+            if not _sleep_interruptible(1.0):
+                return _abort()
             
             positions_history = []
             for _ in range(10):
+                if _check_stopped():
+                    return _abort()
                 pos = self.motors.read("Present_Position", motor_name, normalize=False)
                 positions_history.append(pos)
-                time.sleep(0.1)
+                if not _sleep_interruptible(0.1):
+                    return _abort()
             
             calib_max = int(sum(positions_history[-5:]) / 5)
             log_callback(f"  ✓ MAX détecté: {calib_max}")
             
+            if _check_stopped():
+                return _abort()
+
             # 5. Validation
             if calib_max <= calib_min:
                 log_callback(f"  ❌ Erreur: MAX ({calib_max}) <= MIN ({calib_min})")
@@ -311,7 +351,7 @@ class CalibrationManager:
             # 7. Retour à la position centrale
             center = (calib_min + calib_max) // 2
             self.motors.write("Goal_Position", motor_name, center, normalize=False)
-            time.sleep(0.5)
+            _sleep_interruptible(0.5)
             
             return True
             
