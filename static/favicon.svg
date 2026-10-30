@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4a90e2" />
+      <stop offset="100%" stop-color="#7b68ee" />
+    </linearGradient>
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ecf0f1" />
+      <stop offset="100%" stop-color="#bdc3c7" />
+    </linearGradient>
+  </defs>
+
+  <!-- Fond arrondi sombre moderne -->
+  <rect width="64" height="64" rx="14" fill="#16213e" />
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="none" stroke="url(#grad)" stroke-width="2" />
+
+  <!-- Base du robot -->
+  <rect x="14" y="50" width="36" height="6" rx="3" fill="#2c3e50" />
+  <rect x="24" y="44" width="16" height="7" rx="2" fill="url(#metal)" />
+
+  <!-- Bras inférieur -->
+  <line x1="32" y1="46" x2="22" y2="30" stroke="url(#grad)" stroke-width="5" stroke-linecap="round" />
+  <!-- Joint 1 -->
+  <circle cx="32" cy="46" r="4" fill="#00d2d3" />
+  <circle cx="22" cy="30" r="4" fill="#00d2d3" />
+
+  <!-- Bras supérieur -->
+  <line x1="22" y1="30" x2="40" y2="18" stroke="url(#metal)" stroke-width="4.5" stroke-linecap="round" />
+  <!-- Joint poignet -->
+  <circle cx="40" cy="18" r="3.5" fill="#4a90e2" />
+
+  <!-- Pince (Gripper) -->
+  <path d="M38 15 L46 11 M42 20 L48 23" stroke="#2ecc71" stroke-width="3.5" stroke-linecap="round" />
+
+  <!-- Œil / Caméra avec reflet -->
+  <circle cx="43" cy="14" r="2.5" fill="#e74c3c" />
+  <circle cx="44" cy="13.5" r="0.8" fill="#ffffff" />
+</svg>
